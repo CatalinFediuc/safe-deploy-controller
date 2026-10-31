@@ -133,7 +133,8 @@ CORRUPT_FILES = [
     with_value(f"{ENTRY}.in_flight", "r-0008"),
     without(f"{ENTRY}.in_flight.stage"),
     with_value(f"{ENTRY}.in_flight.stage", "launch"),
-    with_value(f"{ENTRY}.in_flight.to_version", None),
+    with_value(f"{ENTRY}.in_flight.to_version", 7),
+    with_value(f"{ENTRY}.in_flight.deployment_key", 7),
     with_value(f"{ENTRY}.in_flight.health_check", None),
     without(f"{ENTRY}.in_flight.health_check"),
     # A hand-edited threshold must not be able to loosen the verification of a rollback.

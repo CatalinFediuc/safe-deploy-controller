@@ -63,9 +63,9 @@ _ENTRY_RULES: dict[str, Callable[[object], bool]] = {
 }
 _IN_FLIGHT_RULES: dict[str, Callable[[object], bool]] = {
     "run_id": _is_str,
-    "deployment_key": _is_str,
+    "deployment_key": _is_optional_str,
     "from_version": _is_optional_str,
-    "to_version": _is_str,
+    "to_version": _is_optional_str,
     "stage": _is_member_of(Stage),
     "started_at": _is_str,
     "health_check": lambda value: isinstance(value, dict),

@@ -5,9 +5,14 @@ class DeployctlError(Exception):
 class ManifestError(DeployctlError):
     """The manifest was refused; `errors` lists every problem found, not just the first."""
 
-    def __init__(self, errors: list[str]) -> None:
+    def __init__(
+        self, errors: list[str], service: str | None = None, environment: str | None = None
+    ) -> None:
         super().__init__("; ".join(errors))
         self.errors = errors
+        # As declared, valid or not: who tried what is worth auditing even when it was refused.
+        self.service = service
+        self.environment = environment
 
 
 class LockHeld(DeployctlError):
@@ -21,6 +26,10 @@ class LockHeld(DeployctlError):
 
 class StateCorruptError(DeployctlError):
     """The ledger or target file is unreadable or malformed; it must not be overwritten."""
+
+
+class RecoveryRequired(DeployctlError):
+    """A run stopped with its in-flight state saved; `recover` has to finish the job."""
 
 
 class HealthProfileError(DeployctlError):

@@ -108,9 +108,9 @@ class Manifest:
 @dataclass
 class InFlight:
     run_id: str
-    deployment_key: str
+    deployment_key: str | None  # None: a `recover` reconciling drift is not a deployment
     from_version: str | None
-    to_version: str
+    to_version: str | None  # None: a `recover` with no known-good version removes what is running
     stage: Stage
     started_at: str
     health_check: HealthCheckSpec  # `recover` has no manifest to take its thresholds from

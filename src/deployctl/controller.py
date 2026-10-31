@@ -50,6 +50,10 @@ def _version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
 
 
+def _named(version: str | None) -> str:
+    return version or "nothing"
+
+
 def _is_downgrade(version: str, active: str | None) -> bool:
     return active is not None and _version_key(version) < _version_key(active)
 
@@ -199,7 +203,7 @@ class DeploymentController:
         rec.step(
             Stage.PREFLIGHT,
             StepResult.PASS,
-            f"{state.status} @ {state.active_version}; lock acquired{_flags_used(opts)}",
+            f"{state.status} @ {_named(state.active_version)}; lock acquired{_flags_used(opts)}",
         )
         if opts.dry_run:
             return rec.finish(Outcome.NO_OP, state=state, next_action="dry-run: no changes made")
@@ -223,7 +227,8 @@ class DeploymentController:
         running = self._target.running_version(state.env_key)
         if running != state.active_version:
             return _blocked(
-                f"drift: recorded {state.active_version}, running {running}", _RUN_RECOVER
+                f"drift: recorded {_named(state.active_version)}, running {_named(running)}",
+                _RUN_RECOVER,
             )
         if state.active_version == version:
             if state.active_artifact_sha256 != manifest.artifact_sha256:
@@ -325,13 +330,14 @@ class DeploymentController:
         rec.bind_recovery(previous.deployment_key if previous else None, running, good, spec)
 
         if state.status is EnvStatus.STABLE and running == state.active_version:
-            message = f"nothing to recover: STABLE @ {running}; reason: {reason}"
+            message = f"nothing to recover: STABLE @ {_named(running)}; reason: {reason}"
             rec.step(Stage.RECOVER, StepResult.SKIP, message)
             return rec.finish(Outcome.NO_OP, state=state)
         rec.step(
             Stage.RECOVER,
             StepResult.PASS,
-            f"{state.status}, running {running}, restoring {good or 'nothing'}; reason: {reason}",
+            f"{state.status}, running {_named(running)}, "
+            f"restoring {_named(good)}; reason: {reason}",
         )
 
         state.in_flight = rec.in_flight(Stage.ROLLBACK)

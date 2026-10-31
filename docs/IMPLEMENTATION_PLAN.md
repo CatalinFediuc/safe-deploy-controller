@@ -883,12 +883,14 @@ demo: install ## end-to-end scenario used for README example output
 	$(CLI) deploy $(OPTS) $(HEALTHY) --manifest $(M)/invalid-schema.json; echo "exit=$$?"
 	@echo "== 7. checksum mismatch (expect REJECTED)"
 	$(CLI) deploy $(OPTS) $(HEALTHY) --manifest $(M)/checksum-mismatch.json; echo "exit=$$?"
-	@echo "== 8. 1.6.0 during dependency outage (expect ROLLBACK_FAILED / NEEDS_ATTENTION)"
+	@echo "== 8. path traversal (expect REJECTED)"
+	$(CLI) deploy $(OPTS) $(HEALTHY) --manifest $(M)/path-traversal.json; echo "exit=$$?"
+	@echo "== 9. 1.6.0 during dependency outage (expect ROLLBACK_FAILED / NEEDS_ATTENTION)"
 	$(CLI) deploy $(OPTS) $(OUTAGE) --manifest $(M)/orders-api-1.6.0.json; echo "exit=$$?"
-	@echo "== 9. deploy while NEEDS_ATTENTION (expect BLOCKED)"
+	@echo "== 10. deploy while NEEDS_ATTENTION (expect BLOCKED)"
 	$(CLI) deploy $(OPTS) $(HEALTHY) --manifest $(M)/orders-api-1.5.1.json; echo "exit=$$?"
-	@echo "== 10. operator recovers after outage (expect RECOVERED @ 1.5.1)"
-	$(CLI) recover --state-dir $(STATE) $(HEALTHY) --service orders-api --env staging --reason "outage over"; echo "exit=$$?"
+	@echo "== 11. operator recovers after outage (expect RECOVERED @ 1.5.1)"
+	$(CLI) recover --state-dir $(STATE) $(HEALTHY) --service orders-api --env staging --actor oncall --reason "outage over"; echo "exit=$$?"
 	$(CLI) status --state-dir $(STATE) --service orders-api --env staging
 	$(CLI) history --state-dir $(STATE) --service orders-api --env staging --limit 15
 
@@ -1127,7 +1129,7 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
 ## 15. Definition of done (submission checklist)
 
 - [ ] `make ci` passes from a clean clone (fresh venv), and CI is green
-- [ ] `make demo` output pasted in README (text + one JSON result)
+- [x] `make demo` output pasted in README (text + one JSON result)
 - [ ] Tests cover success, invalid input, failed health, repeated execution, crash recovery; coverage ≥ 90%
 - [ ] `dist/` contains wheel, sdist, `deployctl.pyz`; smoke test proves exit codes propagate
 - [ ] README: interpretation, design, assumptions, setup, usage, exit codes, example output, tests, production controls, limitations
@@ -1155,8 +1157,8 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 3. Target + health | Done | [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6), decision review in [PR #7](https://github.com/CatalinFediuc/safe-deploy-controller/pull/7) |
 | 4. Controller | Done | [PR #8](https://github.com/CatalinFediuc/safe-deploy-controller/pull/8) |
 | 5. CLI + rendering | Done | [PR #9](https://github.com/CatalinFediuc/safe-deploy-controller/pull/9) |
-| 6. Demo + examples | Next | |
-| 7. Package, CI, docs | Not started | |
+| 6. Demo + examples | Done | [PR #11](https://github.com/CatalinFediuc/safe-deploy-controller/pull/11) |
+| 7. Package, CI, docs | Next | |
 
 ### 16.2 Changes from the original plan
 
@@ -1193,6 +1195,10 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 5 | `artifact_dir` moved from the controller's constructor to `deploy()` | `recover` has no `--artifact-dir` to pass | 8.3 |
 | 5 | `--state-dir` is on all but `validate`, and `--actor` is on `recover` only | An accepted option that does nothing is misleading. A deploy's actor is the manifest's `requested_by` | 6, 12.1 |
 | 5 | A failed audit write no longer loses the `recover` instruction, and any other unexpected error exits 1 | An audit write failure escaped as a plain `OSError` with the run still in flight | 4.5, 5.6 |
+
+| 6 | `make demo` also runs `path-traversal.json`, as step 8 | It was the only example the demo skipped | 9.2 |
+| 6 | `make demo` passes `--actor oncall` to `recover` | It printed the OS username, which doesn't belong in published output, and failed with `$USER` unset | 9.2 |
+| 6 | Messages say `nothing` instead of `None` | A Python `None` was the first thing the demo showed | none |
 
 ### 16.3 Open items
 

@@ -280,3 +280,41 @@ The user chose the minimal JSON error and run IDs with a timestamp. Real adapter
 - `test_zipapp_smoke` and the README's repair steps belong to Phase 7.
 
 [Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.
+
+## Phase 6: demo and examples
+
+Delivered in [PR #11](https://github.com/CatalinFediuc/safe-deploy-controller/pull/11).
+
+### What we built
+
+- `README.md` now has a summary, a quick start, the 11 demo scenarios, the full `make demo` output and one JSON result. Phase 7 adds the rest of the outline in section 12.1 of the plan.
+
+### What changed in the demo
+
+- **Path traversal:** `path-traversal.json` is now step 8, because it was the only example the demo skipped. The later steps moved up by one.
+- **Fixed actor:** `recover` now gets `--actor oncall`. It had printed the OS username and would have exited 2 with `$USER` unset.
+- **`None` in messages:** the first preflight line read `STABLE @ None`. Preflight and `recover` messages now say `nothing`. `health.py` still says `running version is None` in a failed verification summary, because no demo step reaches it.
+
+### Behavior to know about
+
+- Timestamps and run IDs in the README come from one run, so they differ from a new run.
+- Step 6 isn't in the demo's `history`, because its manifest declares `qa`.
+
+### Problems along the way
+
+- **zsh:** a command that stored flags in a variable failed with a usage error, because zsh doesn't split unquoted variables. The same pattern was in a snippet given to the user during Phase 5, which is the likely cause of the "no record" they reported. README commands spell out every flag, and they were run in zsh as written.
+
+### How it was verified
+
+- `make ci` passed locally on Python 3.12, with 570 tests and 100% branch coverage. The test suite also passed locally on Python 3.11, and GitHub CI passed on Python 3.11, 3.12 and 3.13.
+- We injected 6 bugs into the changed messages, and the tests caught all 6.
+- The tests now include the path-traversal step, in both the controller and CLI versions of the demo sequence.
+- `make demo` passed with `$USER` unset.
+- The README's quick start was followed from a clean copy of the repo, with a fresh virtual environment.
+- The pasted output comes straight from `make -s demo`, unedited.
+
+### Left for later phases
+
+- Phase 7 completes the README, including the repair steps for a corrupt `environment.json`, and adds `AI_PROCESS.md` and `test_zipapp_smoke`.
+
+[Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.

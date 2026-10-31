@@ -73,12 +73,14 @@ demo: install ## end-to-end scenario used for README example output
 	$(CLI) deploy $(OPTS) $(HEALTHY) --manifest $(M)/invalid-schema.json; echo "exit=$$?"
 	@echo "== 7. checksum mismatch (expect REJECTED)"
 	$(CLI) deploy $(OPTS) $(HEALTHY) --manifest $(M)/checksum-mismatch.json; echo "exit=$$?"
-	@echo "== 8. 1.6.0 during dependency outage (expect ROLLBACK_FAILED / NEEDS_ATTENTION)"
+	@echo "== 8. path traversal (expect REJECTED)"
+	$(CLI) deploy $(OPTS) $(HEALTHY) --manifest $(M)/path-traversal.json; echo "exit=$$?"
+	@echo "== 9. 1.6.0 during dependency outage (expect ROLLBACK_FAILED / NEEDS_ATTENTION)"
 	$(CLI) deploy $(OPTS) $(OUTAGE) --manifest $(M)/orders-api-1.6.0.json; echo "exit=$$?"
-	@echo "== 9. deploy while NEEDS_ATTENTION (expect BLOCKED)"
+	@echo "== 10. deploy while NEEDS_ATTENTION (expect BLOCKED)"
 	$(CLI) deploy $(OPTS) $(HEALTHY) --manifest $(M)/orders-api-1.5.1.json; echo "exit=$$?"
-	@echo "== 10. operator recovers after outage (expect RECOVERED @ 1.5.1)"
-	$(CLI) recover --state-dir $(STATE) $(HEALTHY) --service orders-api --env staging --reason "outage over"; echo "exit=$$?"
+	@echo "== 11. operator recovers after outage (expect RECOVERED @ 1.5.1)"
+	$(CLI) recover --state-dir $(STATE) $(HEALTHY) --service orders-api --env staging --actor oncall --reason "outage over"; echo "exit=$$?"
 	$(CLI) status --state-dir $(STATE) --service orders-api --env staging
 	$(CLI) history --state-dir $(STATE) --service orders-api --env staging --limit 15
 

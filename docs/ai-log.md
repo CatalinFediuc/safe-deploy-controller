@@ -27,7 +27,8 @@ All on 2026-10-31, local time (UTC+2). These windows come from commit and PR tim
 | Phase 4 | 11:37 to 11:56 | 19m |
 | **Total to end of Phase 4** | 07:19 to 11:56 | **4h 37m** |
 | Phase 5 review and build | 12:01 to 14:25 | 2h 24m |
-| **Total so far** | 07:19 to 14:25 | **7h 6m** |
+| Phase 6 | 14:36 to 14:52 | 16m |
+| **Total so far** | 07:19 to 14:52 | **7h 33m** |
 
 The 07:19 start is the repository directory's creation time. Git can't separate Phases 0 and 1.
 
@@ -107,6 +108,13 @@ The prompts for these phases were not logged. Add what you remember. The accepte
 - **Claude decided, then accepted by the user:** `--state-dir` is not on `validate`, a missing `$USER` makes `--actor` required, and `--actor` is on `recover` only, so a deploy's audit shows the manifest's `requested_by` rather than who ran it.
 - **Caught by reading the tests:** Claude's first CLI tests included an assertion that could never fail. Fixing it showed its expected list was wrong.
 - **Verification:** 2 of 55 injected bugs survived at first, and each showed a weak test. Stop signals are tested against a real process.
+
+### Phase 6: demo and examples
+
+- **Asked:** start Phase 6.
+- **Claude checked before pasting:** reading the demo output as a published document, rather than as passing checks, found a Python `None` in the first step and the OS username in the last. The demo's test had passed with both, because it only checks outcomes.
+- **Claude's mistake:** a snippet it gave the user in Phase 5 stored flags in `$A`, which zsh doesn't split, so `deploy` failed with a usage error. That's the likely cause of the "no record" the user then reported, and Claude's first answer to that question gave other causes. It noticed when the same pattern failed in its own command, and told the user.
+- **Verification:** the README's commands were run as written in zsh, and its quick start from a clean copy.
 
 ## Useful for `AI_PROCESS.md`
 

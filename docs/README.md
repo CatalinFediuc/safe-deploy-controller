@@ -130,7 +130,7 @@ The new fields exist, but nothing uses them yet. Phase 4 needs to:
 
 ## Phase 3: target and health
 
-Delivered on branch `feat/phase-3-target-health`.
+Delivered in [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6).
 
 ### What we built
 

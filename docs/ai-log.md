@@ -104,7 +104,7 @@ The prompts for these phases were not logged. Add what you remember. The accepte
 - **Claude found, beyond the tracked items:** by trying suspect paths against the merged code, it found that `recover` could remove a running service, that the audit log recorded no outcome or override, that a torn line swallowed the next event, and that SIGHUP left the lock behind. Reading the docs alone had not shown these.
 - **Decided by the user:** nine questions in three batches. They followed Claude's recommendation on most, chose the minimal JSON error over one with `run_id`, and chose run IDs with a timestamp over random hex. They kept real adapters, a cross-host lock and durable state as limitations for now, against Claude's recommendation of a new phase, and may take them up after a working demo.
 - **Changed from Phase 4:** the user accepted Claude's recommendation to reverse its own Phase 4 decision, so a rollback that can't finish exits 5, not 1.
-- **Claude decided, for review:** `--state-dir` is not on `validate`, and a missing `$USER` makes `--actor` required. Claude also put `--actor` on `recover` only, which the user accepted, along with a deploy's audit showing the manifest's `requested_by` rather than who ran it.
+- **Claude decided, then accepted by the user:** `--state-dir` is not on `validate`, a missing `$USER` makes `--actor` required, and `--actor` is on `recover` only, so a deploy's audit shows the manifest's `requested_by` rather than who ran it.
 - **Caught by reading the tests:** Claude's first CLI tests included an assertion that could never fail. Fixing it showed its expected list was wrong.
 - **Verification:** 2 of 55 injected bugs survived at first, and each showed a weak test. Stop signals are tested against a real process.
 

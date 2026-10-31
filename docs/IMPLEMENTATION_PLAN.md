@@ -1215,12 +1215,9 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 
 Start here when picking the work back up. Open items in 16.3 are work to do, and this section is what needs a person to decide.
 
-**Waiting for review (made during Phase 5)**
+**Waiting for review**
 
-Each of these is built and working. Tick one to accept it, or change it.
-
-- [ ] **`--state-dir` is not on `validate`.** `validate` writes nothing, so passing it is now a usage error rather than being ignored.
-- [ ] **With `$USER` unset, `recover` requires `--actor`.** It exits 2 rather than audit an unknown name, which can matter in containers and CI.
+Nothing is waiting right now.
 
 **Deferred on purpose (2026-10-31)**
 
@@ -1252,3 +1249,5 @@ These were discussed and left as they are, so that they don't disturb the next p
 | 2026-10-31 | Real adapters, a lock that works across hosts and durable state stay documented limitations for now. deployctl runs on one host, against the simulated target. The user may take them up after a working demo | 12.1 |
 | 2026-10-31 | Accepted for now: a lost `state.json` has to be restored by hand, because `recover` refuses an environment with no record. To revisit with the items above | 12.1 |
 | 2026-10-31 | `--actor` is on `recover` only, and a deploy's audit shows the manifest's self-declared `requested_by`. Recording who actually ran a deploy will not be implemented | 6, 12.1 |
+| 2026-10-31 | Accepted as built: `--state-dir` is not on `validate`, so passing it is a usage error rather than being ignored | 6 |
+| 2026-10-31 | Accepted as built: with `$USER` unset, `recover` requires `--actor` and exits 2 without it, rather than audit an unknown name | 6 |

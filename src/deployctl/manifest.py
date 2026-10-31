@@ -210,7 +210,7 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _is_finite_number(value: Any) -> bool:
+def is_finite_number(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return False
     try:
@@ -253,7 +253,7 @@ def parse_health_check(section: dict[str, Any], errors: list[str]) -> HealthChec
 
     for key, (in_range, expected) in _NUMBER_RULES.items():
         value = values[key]
-        if not _is_finite_number(value):
+        if not is_finite_number(value):
             errors.append(f"health_check.{key}: must be a finite number")
         elif not in_range(value):
             errors.append(f"health_check.{key}: {expected}")

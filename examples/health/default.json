@@ -1,0 +1,8 @@
+{
+  "orders-api": {
+    "1.4.2": [{"error_rate": 0.002, "p99_latency_ms": 180}],
+    "1.5.0": [{"error_rate": 0.120, "p99_latency_ms": 950}],
+    "1.5.1": ["timeout", {"error_rate": 0.004, "p99_latency_ms": 240}],
+    "1.6.0": [{"error_rate": 0.003, "p99_latency_ms": 200}]
+  }
+}

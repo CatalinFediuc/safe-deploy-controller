@@ -127,3 +127,52 @@ The new fields exist, but nothing uses them yet. Phase 4 needs to:
 - have `recover` use `in_flight.health_check`, and fall back to the defaults for drift, which has no in-flight record
 
 [Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.
+
+## Phase 3: target and health
+
+Delivered in [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6).
+
+### What we built
+
+- `target.py`: the `DeploymentTarget` protocol and `SimulatedTarget`, which keeps the running version per environment in `environment.json`.
+- `health.py`: the `HealthProbe` protocol, `FixtureHealthProbe`, and `verify()`, the check that decides whether a version is healthy.
+- `examples/health/`: `default.json` from section 5.2 of the plan, and `dependency-outage.json`, where every version is unhealthy.
+- `tests/unit/test_target.py` and `tests/unit/test_health.py`.
+
+Nothing calls these modules yet. The controller arrives in Phase 4.
+
+### Where we went beyond the plan
+
+The plan left these open, so we decided them:
+
+- **Corrupt `environment.json`:** it raises `StateCorruptError` and is never overwritten, the same as the ledger. `apply` rewrites the whole file, so writing over something it can't read would lose other environments.
+- **Bad health profile:** a new `HealthProfileError` is raised when the profile is loaded. Treating a bad entry as "no data" would turn a typo into a failed deploy and a rollback.
+- **Running-version mismatch:** it counts as a failed attempt and skips the probe, so verification can still recover if the target catches up.
+- **Nothing running:** `remove()` deletes the entry, and `running_version: null` counts as corrupt.
+
+These close ways a bad signal could have read as healthy:
+
+- Metrics are compared with `not value <= limit`, because `value > limit` is false for NaN.
+- `verify()` checks `problem is None`, because a `ProbeError` with no message would otherwise count as a healthy probe.
+- Profiles refuse negative, non-finite and boolean metrics.
+
+### Behavior to know about
+
+- The verify loop can only stop on a pass or straight after a failed probe, so a failed summary always reads `0/N`.
+- A failed summary names the first problem only, matching the plan's example, so a sample over both limits reports `error_rate`.
+- A fixture sequence restarts in each process. `recover` on 1.5.1 therefore sees the `timeout` entry again, which needs 4 probes and still passes with the example thresholds of 5 attempts and 3 required.
+
+### How it was verified
+
+- `make ci` passed locally on Python 3.12, with 347 tests and 100% branch coverage.
+- The test suite also passed locally on Python 3.11.
+- GitHub CI passed on Python 3.11, 3.12 and 3.13.
+- We put 37 deliberate bugs into a throwaway copy, such as letting NaN pass or ignoring the running version. The tests caught all 37. One of them looped forever, so the harness counted that timeout as caught.
+- Before that run, we added a test that a failed write keeps the old version. Nothing was checking that `SimulatedTarget` writes atomically.
+
+### Left for later phases
+
+- `verify()` doesn't catch errors from reading the target. Phase 4 must route them through the unexpected-exception path.
+- Phase 5 must build `FixtureHealthProbe` before taking the lock, and give `HealthProfileError` an exit code.
+
+[Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.

@@ -20,7 +20,11 @@ class LockHeld(DeployctlError):
 
 
 class StateCorruptError(DeployctlError):
-    """The ledger is unreadable or has an unknown schema; it must not be overwritten."""
+    """The ledger or target file is unreadable or malformed; it must not be overwritten."""
+
+
+class HealthProfileError(DeployctlError):
+    """The health profile is unusable; refused up front, not mistaken for an unhealthy release."""
 
 
 class InvariantError(DeployctlError):

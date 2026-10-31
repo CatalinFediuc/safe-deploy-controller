@@ -21,7 +21,9 @@ All on 2026-10-31, local time (UTC+2). These windows come from commit and PR tim
 | Phase 2 | 09:10 to 10:27 | 1h 17m |
 | Review and pre-Phase 3 adjustments | 10:27 to 10:43 | 16m |
 | Plan update | 10:43 to 10:49 | 6m |
-| **Total so far** | 07:19 to 10:49 | **3h 30m** |
+| AI log | 10:49 to 10:52 | 3m |
+| Phase 3 | 10:52 to 11:08 | 16m |
+| **Total so far** | 07:19 to 11:08 | **3h 49m** |
 
 The 07:19 start is the repository directory's creation time. Git can't separate Phases 0 and 1.
 
@@ -61,6 +63,17 @@ The prompts for these phases were not logged. Add what you remember. The accepte
 
 - **Asked:** update the plan and append what was done, so nothing is lost.
 - **Claude's approach:** update the affected sections in place as well as appending, so that later phases follow current contracts. Section 16 holds status, changes and open items.
+
+### Phase 3: target and health
+
+- **Asked:** implement Phase 3 from the plan, using the documents under `docs/`.
+- **Claude decided, for review:**
+  - a corrupt `environment.json` is refused and never overwritten
+  - a bad health profile fails when loaded, through a new `HealthProfileError`
+  - a running-version mismatch counts as a failed attempt
+- **Caught while designing:** the plan's `ok = error_rate <= max` had to stay in that form, because the negated `>` lets NaN read as healthy. An empty `ProbeError` message had the same risk.
+- **Verification:** the tests passed first time again, so Claude injected 37 bugs into a throwaway copy, and all 37 were caught. Claude's first harness hung on an injected infinite loop and needed a timeout. Writing the bug list also showed that no test covered atomic writes, so one was added.
+- **Process slip:** Claude's first `make ci` check printed no exit code, because `PIPESTATUS` doesn't exist in zsh. It reran the command and read the real exit code rather than trust the output.
 
 ## Useful for `AI_PROCESS.md`
 

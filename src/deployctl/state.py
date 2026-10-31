@@ -210,9 +210,13 @@ class StateStore:
         self.lock_path = state_dir / "deployctl.lock"
         self._clock = clock
 
+    def find(self, service: str, environment: str) -> EnvironmentState | None:
+        """The recorded entry, or None where `load` would hand back a blank one."""
+        return self._read().get(f"{service}/{environment}")
+
     def load(self, service: str, environment: str) -> EnvironmentState:
-        blank = EnvironmentState(service=service, environment=environment)
-        return self._read().get(blank.env_key, blank)
+        recorded = self.find(service, environment)
+        return recorded or EnvironmentState(service=service, environment=environment)
 
     def save(self, state: EnvironmentState) -> None:
         # Reading first also means a corrupt file raises here instead of being overwritten.

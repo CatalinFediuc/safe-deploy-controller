@@ -26,15 +26,17 @@ def test_t1_audit_is_contiguous_and_in_pipeline_order(world: World) -> None:
     result = world.deploy("1.4.2")
 
     events = world.audit_events()
-    assert [event["seq"] for event in events] == [1, 2, 3, 4, 5]
+    assert [event["seq"] for event in events] == [1, 2, 3, 4, 5, 6]
     assert [event["stage"] for event in events] == [
         "validate",
         "preflight",
         "deploy",
         "verify",
         "complete",
+        "finish",
     ]
     assert {event["result"] for event in events} == {"PASS"}
+    assert (events[-1]["outcome"], events[-1]["exit_code"]) == ("SUCCEEDED", 0)
     assert {event["run_id"] for event in events} == {result.run_id}
     assert [step.seq for step in result.steps] == [1, 2, 3, 4, 5]
 

@@ -163,10 +163,36 @@ def test_t20_rebuilt_artifact_at_the_active_version_is_blocked(world: World) -> 
     world.target.calls.clear()
 
     path = world.manifest("1.4.2", artifact_content="rebuilt\n")
-    result = world.controller().deploy(path, DeployOptions())
+    result = world.controller().deploy(path, world.artifact_dir, DeployOptions())
 
     assert result.outcome is Outcome.BLOCKED
     assert result.exit_code is ExitCode.BLOCKED
     assert result.steps[-1].message == "1.4.2 already active with a different artifact"
     assert world.target.calls == []
     assert world.ledger().active_artifact_sha256 == sha
+
+
+@pytest.mark.parametrize(
+    ("opts", "suffix"),
+    [
+        (DeployOptions(), ""),
+        (DeployOptions(dry_run=True), "; --dry-run"),
+        (DeployOptions(allow_known_bad=True), "; --allow-known-bad"),
+        (DeployOptions(allow_downgrade=True), "; --allow-downgrade"),
+        (
+            DeployOptions(allow_known_bad=True, allow_downgrade=True),
+            "; --allow-known-bad; --allow-downgrade",
+        ),
+    ],
+    ids=["none", "dry-run", "known-bad", "downgrade", "both"],
+)
+def test_overrides_and_dry_run_are_audited(world: World, opts: DeployOptions, suffix: str) -> None:
+    world.deploy("1.4.2")
+    run_id = world.deploy("1.6.0", opts).run_id
+
+    message = next(
+        event["message"]
+        for event in world.audit_events()
+        if event["run_id"] == run_id and event["stage"] == "preflight"
+    )
+    assert message == f"STABLE @ 1.4.2; lock acquired{suffix}"

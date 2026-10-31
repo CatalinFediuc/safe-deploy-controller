@@ -21,6 +21,7 @@ class Stage(StrEnum):
     ROLLBACK = "rollback"
     VERIFY_ROLLBACK = "verify_rollback"
     RECOVER = "recover"
+    FINISH = "finish"  # audit only: closes a run, and is not one of the result's steps
 
 
 class StepResult(StrEnum):
@@ -33,6 +34,7 @@ class Outcome(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     NO_OP = "NO_OP"
     RECOVERED = "RECOVERED"
+    VALID = "VALID"
     REJECTED = "REJECTED"
     BLOCKED = "BLOCKED"
     ROLLED_BACK = "ROLLED_BACK"
@@ -62,6 +64,7 @@ EXIT_FOR_OUTCOME: dict[Outcome, ExitCode] = {
     Outcome.SUCCEEDED: ExitCode.OK,
     Outcome.NO_OP: ExitCode.OK,
     Outcome.RECOVERED: ExitCode.OK,
+    Outcome.VALID: ExitCode.OK,
     Outcome.REJECTED: ExitCode.REJECTED,
     Outcome.BLOCKED: ExitCode.BLOCKED,
     Outcome.ROLLED_BACK: ExitCode.ROLLED_BACK,
@@ -160,6 +163,7 @@ class DeploymentResult:
     service: str | None = None
     environment: str | None = None
     change_id: str | None = None
+    actor: str | None = None
     from_version: str | None = None
     to_version: str | None = None
     final_state: FinalState | None = None

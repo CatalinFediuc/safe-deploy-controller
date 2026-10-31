@@ -2,12 +2,14 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Protocol
 
 from deployctl.clock import Clock, format_timestamp
 from deployctl.errors import InvariantError
 from deployctl.models import (
     DeploymentResult,
     EnvironmentState,
+    ExitCode,
     FinalState,
     HealthCheckSpec,
     InFlight,
@@ -20,6 +22,51 @@ from deployctl.models import (
 )
 
 
+class AuditSink(Protocol):
+    def append(self, event: dict[str, object]) -> None: ...
+
+
+class NullAudit:
+    """For `validate`, which runs in CI with no state and writes nothing."""
+
+    def append(self, event: dict[str, object]) -> None:
+        pass
+
+
+@dataclass(frozen=True)
+class AuditHistory:
+    runs: list[dict[str, Any]]  # newest first
+    skipped_lines: int  # across the whole file: a torn line can't say whose it was
+
+
+def _decode_event(line: str) -> dict[str, Any] | None:
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    # A fragment of a torn line can still parse, as a number for example.
+    if not isinstance(event, dict) or not isinstance(event.get("run_id"), str):
+        return None
+    return event
+
+
+def _summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
+    last = events[-1]  # `recover` only learns its versions once it has read the ledger
+    return {
+        "run_id": last["run_id"],
+        "started_at": events[0].get("ts"),
+        "from_version": last.get("from_version"),
+        "to_version": last.get("to_version"),
+        "change_id": last.get("change_id"),
+        "actor": last.get("actor"),
+        # None when the run left no `finish` event: it died, or stopped with exit 1.
+        "outcome": last.get("outcome"),
+        "rollback_status": last.get("rollback_status"),
+        "exit_code": last.get("exit_code"),
+        "events": events,
+    }
+
+
 class AuditLog:
     """Append-only JSONL trail; each event is on disk before the run moves on."""
 
@@ -28,10 +75,36 @@ class AuditLog:
 
     def append(self, event: dict[str, object]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(event) + "\n")
+        with self.path.open("a+b") as stream:
+            # A hard kill can leave a torn line, which would swallow this event if joined to it.
+            if stream.seek(0, os.SEEK_END) > 0:
+                stream.seek(-1, os.SEEK_END)
+                if stream.read(1) != b"\n":
+                    stream.write(b"\n")
+            stream.write(json.dumps(event).encode() + b"\n")
             stream.flush()
             os.fsync(stream.fileno())
+
+    def history(self, service: str, environment: str, limit: int) -> AuditHistory:
+        """The latest `limit` runs of an environment, with a count of unreadable lines."""
+        runs: dict[str, list[dict[str, Any]]] = {}
+        skipped = 0
+        try:
+            with self.path.open(encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    event = _decode_event(line)
+                    if event is None:
+                        skipped += 1
+                    else:
+                        runs.setdefault(event["run_id"], []).append(event)
+        except FileNotFoundError:
+            return AuditHistory(runs=[], skipped_lines=0)
+        matching = [
+            _summarize(events)
+            for events in runs.values()
+            if (events[-1].get("service"), events[-1].get("environment")) == (service, environment)
+        ]
+        return AuditHistory(runs=matching[-limit:][::-1], skipped_lines=skipped)
 
 
 @dataclass
@@ -50,7 +123,7 @@ class _RunIdentity:
 class Recorder:
     """Numbers one run's steps, writes each to the audit log and builds the final result."""
 
-    def __init__(self, audit: AuditLog, clock: Clock, run_id: str) -> None:
+    def __init__(self, audit: AuditSink, clock: Clock, run_id: str) -> None:
         self.run_id = run_id
         self._audit = audit
         self._clock = clock
@@ -124,7 +197,7 @@ class Recorder:
         next_action: str | None = None,
     ) -> DeploymentResult:
         identity = self._identity
-        return DeploymentResult(
+        result = DeploymentResult(
             run_id=self.run_id,
             outcome=outcome,
             rollback_status=rollback_status,
@@ -132,6 +205,7 @@ class Recorder:
             service=identity.service,
             environment=identity.environment,
             change_id=identity.change_id,
+            actor=identity.actor,
             from_version=identity.from_version,
             to_version=identity.to_version,
             final_state=(
@@ -142,6 +216,22 @@ class Recorder:
             next_action=next_action,
             steps=list(self._steps),
         )
+        self._audit.append(self._finish_event(result))
+        return result
+
+    def _finish_event(self, result: DeploymentResult) -> dict[str, object]:
+        record = StepRecord(
+            seq=len(self._steps) + 1,
+            ts=format_timestamp(self._clock.now()),
+            stage=Stage.FINISH,
+            result=StepResult.PASS if result.exit_code is ExitCode.OK else StepResult.FAIL,
+            message=result.next_action or result.outcome,
+        )
+        return self._event(record) | {
+            "outcome": result.outcome,
+            "rollback_status": result.rollback_status,
+            "exit_code": int(result.exit_code),
+        }
 
     def _event(self, record: StepRecord) -> dict[str, object]:
         identity = self._identity

@@ -213,20 +213,45 @@ def test_target_read_error_during_verify_rolls_back(world: World) -> None:
     assert world.simulated.running_version(ENV) == "1.4.2"
 
 
-def test_verify_error_during_rollback_leaves_explicit_state(world: World) -> None:
+def test_verify_error_during_rollback_is_a_failed_rollback(world: World) -> None:
     world.deploy("1.4.2")
     # Reads: preflight, the rollout wait, three probes, then the rollback's rollout wait.
     faulty = FaultyTarget(world.target, fail_on="running_version", call_no=6)
-    with pytest.raises(RecoveryRequired, match="run `deployctl recover`"):
-        world.deploy("1.5.0", target=faulty)
+    result = world.deploy("1.5.0", target=faulty)
 
+    assert result.outcome is Outcome.ROLLBACK_FAILED
+    assert result.exit_code is ExitCode.NEEDS_ATTENTION
+    assert result.rollback_status is RollbackStatus.FAILED
+    assert result.steps[-1].stage == "verify_rollback"
+    assert result.steps[-1].message == "verification failed: target exploded"
     state = world.ledger()
-    assert state.status is EnvStatus.ROLLING_BACK
+    assert state.status is EnvStatus.NEEDS_ATTENTION
     assert state.in_flight is not None
     assert state.in_flight.stage == "verify_rollback"
-    assert world.audit_events()[-1]["message"] == "run stopped: target exploded"
     assert not world.store.lock_path.exists()
     assert world.recover().outcome is Outcome.RECOVERED
+
+
+def test_a_failed_audit_write_keeps_the_recover_instruction(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.deploy("1.4.2")
+    real_append = world.audit.append
+    appends = iter([real_append, real_append])  # validate and preflight
+
+    def append(event: dict[str, object]) -> None:
+        next(appends, _disk_full)(event)
+
+    def _disk_full(_: dict[str, object]) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(world.audit, "append", append)
+    with pytest.raises(RecoveryRequired, match="run `deployctl recover`"):
+        world.deploy("1.6.0")
+    monkeypatch.undo()
+
+    assert world.ledger().status is not EnvStatus.STABLE
+    assert world.recover().final_state == FinalState(EnvStatus.STABLE, "1.4.2")
 
 
 def test_ledger_failure_after_verify_leaves_explicit_state(

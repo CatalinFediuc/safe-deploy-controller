@@ -180,7 +180,6 @@ class World:
             probe=FixtureHealthProbe(path),
             audit=self.audit,
             clock=self.clock,
-            artifact_dir=self.artifact_dir,
             run_id_factory=self.run_ids,
         )
 
@@ -192,7 +191,7 @@ class World:
         target: DeploymentTarget | None = None,
     ) -> DeploymentResult:
         controller = self.controller(profile, target)
-        return controller.deploy(self.manifest(version), opts or DeployOptions())
+        return controller.deploy(self.manifest(version), self.artifact_dir, opts or DeployOptions())
 
     def recover(
         self,

@@ -31,13 +31,12 @@ class Demo:
             probe=FixtureHealthProbe(EXAMPLES / "health" / profile),
             audit=AuditLog(self.state_dir),
             clock=self.clock,
-            artifact_dir=EXAMPLES / "artifacts",
             run_id_factory=self.run_ids,
         )
 
     def deploy(self, manifest: str, profile: str = HEALTHY) -> DeploymentResult:
         path = EXAMPLES / "manifests" / f"{manifest}.json"
-        return self.controller(profile).deploy(path, DeployOptions())
+        return self.controller(profile).deploy(path, EXAMPLES / "artifacts", DeployOptions())
 
 
 @pytest.fixture

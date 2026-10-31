@@ -91,7 +91,7 @@ def test_lock_is_released_after_every_kind_of_run(world: World) -> None:
 def test_invalid_manifest_never_waits_for_the_lock(world: World) -> None:
     hold_lock(world)
     path = world.manifest("1.5")
-    result = world.controller().deploy(path, DeployOptions())
+    result = world.controller().deploy(path, world.artifact_dir, DeployOptions())
     assert result.outcome is Outcome.REJECTED
 
 

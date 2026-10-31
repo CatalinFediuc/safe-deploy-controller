@@ -130,7 +130,7 @@ The new fields exist, but nothing uses them yet. Phase 4 needs to:
 
 ## Phase 3: target and health
 
-Delivered in [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6).
+Delivered in [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6). The decision review after it is in [PR #7](https://github.com/CatalinFediuc/safe-deploy-controller/pull/7).
 
 ### What we built
 
@@ -170,7 +170,7 @@ These close ways a bad signal could have read as healthy:
 - GitHub CI passed on Python 3.11, 3.12 and 3.13.
 - We put 37 deliberate bugs into a throwaway copy, such as letting NaN pass or ignoring the running version. The tests caught all 37. One of them looped forever, so the harness counted that timeout as caught.
 - Before that run, we added a test that a failed write keeps the old version. Nothing was checking that `SimulatedTarget` writes atomically.
-- After the decision review, `make ci` passed locally on Python 3.12 with 374 tests and 100% branch coverage, and the test suite passed on Python 3.11.
+- After the decision review, `make ci` passed locally on Python 3.12 with 374 tests and 100% branch coverage, and the test suite passed on Python 3.11. GitHub CI passed on Python 3.11, 3.12 and 3.13.
 - We injected 27 more bugs into the key checks, the rollout wait and the metric checks, and the tests catch 26. One survived at first: a default of 0 would have turned the rollout wait off, so a test now covers the default. The last one changes nothing: replacing `problem is None` with `not problem` has no effect now that a problem is never empty.
 
 ### Left for later phases

@@ -182,6 +182,7 @@ def test_in_flight_carries_the_run_identity(recorder: Recorder, clock: FakeClock
     assert (in_flight.from_version, in_flight.to_version) == ("1.4.2", "1.5.0")
     assert in_flight.stage is Stage.DEPLOY
     assert in_flight.started_at == "2026-11-01T10:15:06.000Z"
+    assert in_flight.health_check == manifest.health_check
 
 
 def test_in_flight_of_a_first_deploy_has_no_from_version(recorder: Recorder) -> None:

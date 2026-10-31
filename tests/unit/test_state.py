@@ -8,8 +8,19 @@ import pytest
 
 from conftest import FakeClock
 from deployctl.errors import LockHeld, StateCorruptError
-from deployctl.models import EnvironmentState, EnvStatus, InFlight, Stage
+from deployctl.models import EnvironmentState, EnvStatus, HealthCheckSpec, InFlight, Stage
 from deployctl.state import MAX_KNOWN_GOOD_HISTORY, FileLock, LockInfo, StateStore
+
+ACTIVE_SHA256 = "b" * 64
+# Differs from every default, so a test cannot pass by falling back to one.
+HEALTH_CHECK = HealthCheckSpec(
+    attempts=7,
+    required_consecutive=2,
+    interval_seconds=0.1,
+    timeout_seconds=1.5,
+    max_error_rate=0.02,
+    max_p99_latency_ms=400.0,
+)
 
 
 def stable_state(active_version: str = "1.4.2") -> EnvironmentState:
@@ -17,6 +28,7 @@ def stable_state(active_version: str = "1.4.2") -> EnvironmentState:
         service="orders-api",
         environment="staging",
         active_version=active_version,
+        active_artifact_sha256=ACTIVE_SHA256,
         last_known_good=active_version,
         known_good_history=[active_version],
         failed_versions=["1.5.0"],
@@ -35,6 +47,7 @@ def deploying_state() -> EnvironmentState:
         to_version="1.5.1",
         stage=Stage.DEPLOY,
         started_at="2026-11-01T10:16:00.000Z",
+        health_check=HEALTH_CHECK,
     )
     return state
 
@@ -46,6 +59,7 @@ def valid_document() -> dict[str, Any]:
             "orders-api/staging": {
                 "status": "DEPLOYING",
                 "active_version": "1.4.2",
+                "active_artifact_sha256": ACTIVE_SHA256,
                 "last_known_good": "1.4.2",
                 "known_good_history": ["1.4.2"],
                 "failed_versions": ["1.5.0"],
@@ -56,6 +70,14 @@ def valid_document() -> dict[str, Any]:
                     "to_version": "1.5.1",
                     "stage": "deploy",
                     "started_at": "2026-11-01T10:16:00.000Z",
+                    "health_check": {
+                        "attempts": 7,
+                        "required_consecutive": 2,
+                        "interval_seconds": 0.1,
+                        "timeout_seconds": 1.5,
+                        "max_error_rate": 0.02,
+                        "max_p99_latency_ms": 400.0,
+                    },
                 },
                 "updated_at": "2026-11-01T10:15:02.300Z",
                 "last_run_id": "r-0007",
@@ -103,12 +125,22 @@ CORRUPT_FILES = [
     with_value(f"{ENTRY}.status", "ON_FIRE"),
     with_value(f"{ENTRY}.status", ["STABLE"]),
     with_value(f"{ENTRY}.active_version", 142),
+    with_value(f"{ENTRY}.active_artifact_sha256", 7),
+    without(f"{ENTRY}.active_artifact_sha256"),
     with_value(f"{ENTRY}.known_good_history", "1.4.2"),
     with_value(f"{ENTRY}.failed_versions", [1]),
     with_value(f"{ENTRY}.in_flight", "r-0008"),
     without(f"{ENTRY}.in_flight.stage"),
     with_value(f"{ENTRY}.in_flight.stage", "launch"),
     with_value(f"{ENTRY}.in_flight.to_version", None),
+    with_value(f"{ENTRY}.in_flight.health_check", None),
+    without(f"{ENTRY}.in_flight.health_check"),
+    # A hand-edited threshold must not be able to loosen the verification of a rollback.
+    without(f"{ENTRY}.in_flight.health_check.max_error_rate"),
+    with_value(f"{ENTRY}.in_flight.health_check.max_error_rate", 5),
+    with_value(f"{ENTRY}.in_flight.health_check.required_consecutive", 0),
+    with_value(f"{ENTRY}.in_flight.health_check.attempts", True),
+    with_value(f"{ENTRY}.in_flight.health_check.surprise", 1),
 ]
 
 
@@ -144,6 +176,13 @@ def test_round_trip_restores_enums(store: StateStore) -> None:
     assert loaded.status is EnvStatus.DEPLOYING
     assert loaded.in_flight is not None
     assert loaded.in_flight.stage is Stage.DEPLOY
+
+
+def test_round_trip_keeps_the_health_thresholds(store: StateStore) -> None:
+    store.save(deploying_state())
+    loaded = store.load("orders-api", "staging")
+    assert loaded.in_flight is not None
+    assert loaded.in_flight.health_check == HEALTH_CHECK
 
 
 def test_saved_file_matches_the_ledger_contract(store: StateStore) -> None:

@@ -166,6 +166,7 @@ These close ways a bad signal could have read as healthy:
 
 - `make ci` passed locally on Python 3.12, with 347 tests and 100% branch coverage.
 - The test suite also passed locally on Python 3.11.
+- GitHub CI passed on Python 3.11, 3.12 and 3.13.
 - We put 37 deliberate bugs into a throwaway copy, such as letting NaN pass or ignoring the running version. The tests caught all 37. One of them looped forever, so the harness counted that timeout as caught.
 - Before that run, we added a test that a failed write keeps the old version. Nothing was checking that `SimulatedTarget` writes atomically.
 

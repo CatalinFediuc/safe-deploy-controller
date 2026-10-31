@@ -1127,7 +1127,7 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 2. State, lock, audit, clock | Done | [PR #2](https://github.com/CatalinFediuc/safe-deploy-controller/pull/2) |
 | 2a. Pre-Phase 3 adjustments | Done | [PR #3](https://github.com/CatalinFediuc/safe-deploy-controller/pull/3) |
 | 3. Target + health | Done | [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6), decision review in [PR #7](https://github.com/CatalinFediuc/safe-deploy-controller/pull/7) |
-| 4. Controller | Done | branch `feat/phase-4-controller` |
+| 4. Controller | Done | [PR #8](https://github.com/CatalinFediuc/safe-deploy-controller/pull/8) |
 | 5. CLI + rendering | Next | |
 | 6 to 7 | Not started | |
 

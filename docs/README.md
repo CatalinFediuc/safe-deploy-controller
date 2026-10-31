@@ -183,7 +183,7 @@ These close ways a bad signal could have read as healthy:
 
 ## Phase 4: controller
 
-Delivered on branch `feat/phase-4-controller`.
+Delivered in [PR #8](https://github.com/CatalinFediuc/safe-deploy-controller/pull/8).
 
 ### What we built
 
@@ -219,7 +219,7 @@ The user agreed all four proposed items:
 
 ### How it was verified
 
-- `make ci` passed locally on Python 3.12, with 488 tests and 100% branch coverage. The test suite also passed locally on Python 3.11.
+- `make ci` passed locally on Python 3.12, with 488 tests and 100% branch coverage. The test suite also passed locally on Python 3.11, and GitHub CI passed on Python 3.11, 3.12 and 3.13.
 - We put 56 deliberate bugs into a throwaway copy, such as skipping the write-ahead save, removing each gate, or ignoring the stored thresholds. Three survived at first and each showed a missing assertion: the `SKIP` result on a `NO_OP`, the deployment key on `recover`, and `updated_at`. The tests now catch all 56.
 - The repair steps in section 12.1 of the plan now have scenarios, for repairing the file and for deleting it, including that each environment needs its own `recover` after a delete.
 

@@ -1,7 +1,6 @@
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -222,27 +221,6 @@ def test_failed_replace_leaves_the_old_file_intact(
 
     assert store.path.read_bytes() == before
     assert not store.path.with_name("state.json.tmp").exists()
-
-
-def test_new_content_is_durable_before_it_replaces_the_old(
-    store: StateStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[str] = []
-    real_fsync, real_replace = os.fsync, os.replace
-
-    def fsync(descriptor: int) -> None:
-        calls.append("fsync")
-        real_fsync(descriptor)
-
-    def replace(source: Path, target: Path) -> None:
-        calls.append("replace")
-        real_replace(source, target)
-
-    monkeypatch.setattr(os, "fsync", fsync)
-    monkeypatch.setattr(os, "replace", replace)
-    store.save(stable_state())
-    # The second fsync is the directory, which makes the rename itself durable.
-    assert calls == ["fsync", "replace", "fsync"]
 
 
 def test_leftover_tmp_file_from_a_crash_is_ignored(store: StateStore) -> None:

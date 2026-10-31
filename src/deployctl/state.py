@@ -8,6 +8,7 @@ from typing import Any
 
 from deployctl.clock import Clock, format_timestamp
 from deployctl.errors import InvariantError, LockHeld, StateCorruptError
+from deployctl.fileio import write_atomic
 from deployctl.manifest import parse_health_check
 from deployctl.models import EnvironmentState, EnvStatus, HealthCheckSpec, InFlight, Stage
 
@@ -147,26 +148,6 @@ def _encode(environments: dict[str, EnvironmentState]) -> str:
     return json.dumps(document, indent=2) + "\n"
 
 
-def _write_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp")
-    try:
-        with tmp.open("w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        tmp.replace(path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    # The rename is only durable once the directory is: write-ahead intent must survive power loss.
-    directory = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-
-
 @dataclass(frozen=True)
 class LockInfo:
     owner: str
@@ -237,7 +218,7 @@ class StateStore:
         # Reading first also means a corrupt file raises here instead of being overwritten.
         environments = self._read()
         environments[state.env_key] = state
-        _write_atomic(self.path, _encode(environments))
+        write_atomic(self.path, _encode(environments))
 
     def lock(self, owner: str) -> FileLock:
         return FileLock.acquire(self.lock_path, owner, format_timestamp(self._clock.now()))

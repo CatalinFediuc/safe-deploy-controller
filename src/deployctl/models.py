@@ -78,6 +78,7 @@ class HealthCheckSpec:
     timeout_seconds: float = 2.0
     max_error_rate: float = 0.01
     max_p99_latency_ms: float = 500.0
+    rollout_timeout_seconds: float = 60.0
 
 
 @dataclass(frozen=True)

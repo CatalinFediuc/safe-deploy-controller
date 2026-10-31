@@ -21,6 +21,7 @@ SPEC = HealthCheckSpec(
     timeout_seconds=1.5,
     max_error_rate=0.02,
     max_p99_latency_ms=400.0,
+    rollout_timeout_seconds=5.0,
 )
 HEALTHY = HealthSample(error_rate=0.001, p99_latency_ms=100.0)
 UNHEALTHY = HealthSample(error_rate=0.120, p99_latency_ms=950.0)
@@ -130,7 +131,8 @@ def test_single_probe_never_sleeps(clock: FakeClock) -> None:
     [
         (ProbeTimeout("probe timed out after 2s"), "probe timed out after 2s"),
         (ProbeError("probe returned an error"), "probe returned an error"),
-        (ProbeError(), ""),  # an exception with no message must not read as "no problem"
+        (ProbeError(), "probe failed with no detail"),  # must not read as "no problem"
+        (ProbeTimeout(), "probe failed with no detail"),
     ],
 )
 def test_probe_failures_count_as_failed_probes(
@@ -165,16 +167,26 @@ def test_one_missing_metric_fails(clock: FakeClock, sample: HealthSample, reason
 
 
 @pytest.mark.parametrize(
-    "sample",
+    ("sample", "reason"),
     [
-        HealthSample(math.nan, 100.0),
-        HealthSample(0.001, math.nan),
-        HealthSample(math.inf, 100.0),
-        HealthSample(0.001, math.inf),
+        (HealthSample(math.nan, 100.0), "error_rate invalid (nan)"),
+        (HealthSample(0.001, math.nan), "p99_latency_ms invalid (nan)"),
+        (HealthSample(math.inf, 100.0), "error_rate invalid (inf)"),
+        (HealthSample(0.001, math.inf), "p99_latency_ms invalid (inf)"),
+        (HealthSample(-1.0, 100.0), "error_rate invalid (-1.0)"),
+        (HealthSample(0.001, -1.0), "p99_latency_ms invalid (-1.0)"),
     ],
 )
-def test_non_finite_metrics_fail(clock: FakeClock, sample: HealthSample) -> None:
-    assert not run_verify(ScriptedProbe(sample), clock).passed
+def test_values_that_are_not_measurements_fail(
+    clock: FakeClock, sample: HealthSample, reason: str
+) -> None:
+    verdict = run_verify(ScriptedProbe(sample), clock)
+    assert not verdict.passed
+    assert verdict.summary.endswith(f"({reason})")
+
+
+def test_zero_metrics_are_healthy(clock: FakeClock) -> None:
+    assert run_verify(ScriptedProbe(HealthSample(0.0, 0.0)), clock).passed
 
 
 @pytest.mark.parametrize(
@@ -195,23 +207,82 @@ def test_latency_problem_is_reported(clock: FakeClock) -> None:
 
 
 @pytest.mark.parametrize("running", ["1.4.2", None])
-def test_running_version_mismatch_fails_without_probing(
+def test_version_lost_after_the_rollout_fails_without_probing(
     clock: FakeClock, running: str | None
 ) -> None:
     probe = ScriptedProbe(HEALTHY)
-    verdict = run_verify(probe, clock, target=ScriptedTarget(running))
+    verdict = run_verify(probe, clock, target=ScriptedTarget(VERSION, running))
     assert not verdict.passed
     assert verdict.summary.endswith(f"(running version is {running}, expected {VERSION})")
     assert probe.calls == []
 
 
 def test_version_changing_mid_verification_resets_the_streak(clock: FakeClock) -> None:
-    target = ScriptedTarget(VERSION, VERSION, "1.4.2", VERSION)
+    target = ScriptedTarget(VERSION, VERSION, VERSION, "1.4.2", VERSION)
     probe = ScriptedProbe(HEALTHY)
     verdict = run_verify(probe, clock, target=target)
     assert not verdict.passed
     assert verdict.probes == 3
     assert len(probe.calls) == 2
+
+
+def test_slow_rollout_waits_without_using_up_attempts(clock: FakeClock) -> None:
+    probe = ScriptedProbe(HEALTHY)
+    target = ScriptedTarget("1.4.2", "1.4.2", VERSION)
+    verdict = run_verify(probe, clock, target=target)
+    assert verdict.passed
+    assert verdict.probes == 3
+    assert clock.sleeps == [1.0, 1.0, 0.25, 0.25]
+
+
+def test_rollout_may_finish_exactly_at_the_timeout(clock: FakeClock) -> None:
+    target = ScriptedTarget(*["1.4.2"] * 5, VERSION)
+    assert run_verify(ScriptedProbe(HEALTHY), clock, target=target).passed
+
+
+@pytest.mark.parametrize("running", ["1.4.2", None])
+def test_rollout_timeout_fails_without_probing(clock: FakeClock, running: str | None) -> None:
+    probe = ScriptedProbe(HEALTHY)
+    verdict = run_verify(probe, clock, target=ScriptedTarget(running))
+    assert verdict == Verdict(
+        passed=False,
+        probes=0,
+        consecutive=0,
+        summary=(
+            "0/3 consecutive healthy (rollout not finished after 5s: "
+            f"running version is {running}, expected {VERSION})"
+        ),
+    )
+    assert probe.calls == []
+    assert clock.sleeps == [1.0] * 5
+
+
+def test_last_rollout_wait_stops_at_the_timeout(clock: FakeClock) -> None:
+    spec = HealthCheckSpec(rollout_timeout_seconds=2.5)
+    run_verify(ScriptedProbe(HEALTHY), clock, spec, ScriptedTarget("1.4.2"))
+    assert clock.sleeps == [1.0, 1.0, 0.5]
+
+
+def test_rollout_wait_is_on_by_default(clock: FakeClock) -> None:
+    run_verify(ScriptedProbe(HEALTHY), clock, HealthCheckSpec(), ScriptedTarget("1.4.2"))
+    assert sum(clock.sleeps) == 60.0
+
+
+def test_zero_rollout_timeout_checks_once_without_waiting(clock: FakeClock) -> None:
+    spec = HealthCheckSpec(rollout_timeout_seconds=0)
+    assert not run_verify(ScriptedProbe(HEALTHY), clock, spec, ScriptedTarget("1.4.2")).passed
+    assert clock.sleeps == []
+
+
+def test_slow_target_calls_count_towards_the_rollout_timeout(clock: FakeClock) -> None:
+    class SlowTarget(ScriptedTarget):
+        def running_version(self, env_key: str) -> str | None:
+            clock.advance(3.0)
+            return super().running_version(env_key)
+
+    verdict = run_verify(ScriptedProbe(HEALTHY), clock, target=SlowTarget("1.4.2"))
+    assert not verdict.passed
+    assert clock.sleeps == [1.0]
 
 
 def write_profile(tmp_path: Path, content: object) -> Path:
@@ -304,6 +375,12 @@ INVALID_PROFILES = [
     '{"orders-api": {"1.5.0": [{"error_rate": -0.1}]}}',
     '{"orders-api": {"1.5.0": [{"error_rate": NaN}]}}',
     '{"orders-api": {"1.5.0": [{"p99_latency_ms": 1e999}]}}',
+    '{"Orders_API": {"1.5.0": ["timeout"]}}',
+    '{"orders-api\\n": {"1.5.0": ["timeout"]}}',
+    '{"orders-api": {"1.6.O": ["timeout"]}}',
+    '{"orders-api": {"1.5": ["timeout"]}}',
+    '{"orders-api": {"01.5.0": ["timeout"]}}',
+    '{"orders-api": {"1.5.0\\n": ["timeout"]}}',
 ]
 
 
@@ -320,6 +397,18 @@ def test_error_names_the_bad_entry(tmp_path: Path) -> None:
     path = write_profile(tmp_path, {"orders-api": {VERSION: [good, "slow"]}})
     with pytest.raises(HealthProfileError, match=r"orders-api 1\.5\.0\[1\]"):
         FixtureHealthProbe(path)
+
+
+@pytest.mark.parametrize(
+    ("content", "named"),
+    [
+        ({"orders_api": {VERSION: ["timeout"]}}, "orders_api"),
+        ({"orders-api": {"1.6.O": ["timeout"]}}, r"orders-api 1\.6\.O"),
+    ],
+)
+def test_error_names_the_bad_key(tmp_path: Path, content: object, named: str) -> None:
+    with pytest.raises(HealthProfileError, match=named):
+        FixtureHealthProbe(write_profile(tmp_path, content))
 
 
 def test_missing_profile_is_refused(tmp_path: Path) -> None:

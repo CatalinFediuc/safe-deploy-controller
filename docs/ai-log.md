@@ -23,7 +23,8 @@ All on 2026-10-31, local time (UTC+2). These windows come from commit and PR tim
 | Plan update | 10:43 to 10:49 | 6m |
 | AI log | 10:49 to 10:52 | 3m |
 | Phase 3 | 10:52 to 11:08 | 16m |
-| **Total so far** | 07:19 to 11:08 | **3h 49m** |
+| Phase 3 decision review | 11:08 to 11:37 | 29m |
+| **Total so far** | 07:19 to 11:37 | **4h 18m** |
 
 The 07:19 start is the repository directory's creation time. Git can't separate Phases 0 and 1.
 
@@ -74,6 +75,14 @@ The prompts for these phases were not logged. Add what you remember. The accepte
 - **Caught while designing:** the plan's `ok = error_rate <= max` had to stay in that form, because the negated `>` lets NaN read as healthy. An empty `ProbeError` message had the same risk.
 - **Verification:** the tests passed first time again, so Claude injected 37 bugs into a throwaway copy, and all 37 were caught. Claude's first harness hung on an injected infinite loop and needed a timeout. Writing the bug list also showed that no test covered atomic writes, so one was added.
 - **Process slip:** Claude's first `make ci` check printed no exit code, because `PIPESTATUS` doesn't exist in zsh. It reran the command and read the real exit code rather than trust the output.
+
+### Phase 3 decision review
+
+- **Asked:** walk through each decision Claude made in Phase 3, so the user can decide.
+- **Corrupt `environment.json`:** Claude compared four options and recommended refusing the file. The user agreed, and asked that the manual repair be documented so it isn't forgotten. It is now a required Phase 7 item, with a Phase 4 scenario to prove the steps work.
+- **Bad health profile:** while explaining this decision, Claude found its own claim was overstated: it had said a typo couldn't look like an unhealthy release, but keys weren't checked. Claude recommended adding key checks and using exit 2, which matches a missing `--health-profile`. The user agreed, and preferred keeping the exit code simple to the audited alternative of exit 3.
+- **Running-version mismatch:** Claude recommended keeping a mismatch as a failed attempt, partly because the simulation can't exhibit a slow rollout. The user rejected that and chose a separate rollout wait, because they are preparing to roll this out for production. Claude's recommendation had been judged for a take-home, not for real targets.
+- **Bad metric values:** while listing the pros and cons, Claude found that `verify()` didn't refuse negative values, so a real probe returning `-1` would have read as healthy. The user chose the small fix and declined Claude's suggestion to carry a separate "inconclusive" result into Phase 4.
 
 ## Useful for `AI_PROCESS.md`
 

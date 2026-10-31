@@ -14,8 +14,8 @@ from deployctl.models import HealthCheckSpec, Manifest
 ENVIRONMENTS = ("dev", "staging", "prod")
 
 # Always applied with fullmatch: `$` would accept a trailing newline, and `\d` non-ASCII digits.
-_SERVICE_RE = re.compile(r"[a-z][a-z0-9-]{1,40}")
-_VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+SERVICE_RE = re.compile(r"[a-z][a-z0-9-]{1,40}")
+VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 _CHANGE_ID_RE = re.compile(r"CHG-[0-9]{3,}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -37,6 +37,7 @@ _NUMBER_RULES: dict[str, tuple[Callable[[float], bool], str]] = {
     "timeout_seconds": (lambda value: 0 < value <= 30, "must be above 0 and at most 30"),
     "max_error_rate": (lambda value: 0 <= value <= 1, "must be between 0 and 1"),
     "max_p99_latency_ms": (lambda value: value > 0, "must be above 0"),
+    "rollout_timeout_seconds": (lambda value: 0 <= value <= 3600, "must be between 0 and 3600"),
 }
 
 
@@ -44,9 +45,9 @@ def load_manifest(path: Path, artifact_dir: Path) -> Manifest:
     """Parse and validate a manifest, raising ManifestError with every problem found."""
     data, errors = _read_object(path)
     _reject_unknown(data, _TOP_LEVEL_KEYS, "manifest", errors)
-    service = _matching(data, "service", _SERVICE_RE, "2-41 of a-z, 0-9, '-'", errors)
+    service = _matching(data, "service", SERVICE_RE, "2-41 of a-z, 0-9, '-'", errors)
     environment = _environment(data, errors)
-    version = _matching(data, "version", _VERSION_RE, "MAJOR.MINOR.PATCH", errors)
+    version = _matching(data, "version", VERSION_RE, "MAJOR.MINOR.PATCH", errors)
     artifact = _artifact(data, artifact_dir, errors)
     change_id = _matching(data, "change_id", _CHANGE_ID_RE, "CHG-<3+ digits>", errors)
     requested_by = _requested_by(data, errors)

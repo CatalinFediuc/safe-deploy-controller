@@ -19,6 +19,7 @@ HEALTH_CHECK = HealthCheckSpec(
     timeout_seconds=1.5,
     max_error_rate=0.02,
     max_p99_latency_ms=400.0,
+    rollout_timeout_seconds=30.0,
 )
 
 
@@ -76,6 +77,7 @@ def valid_document() -> dict[str, Any]:
                         "timeout_seconds": 1.5,
                         "max_error_rate": 0.02,
                         "max_p99_latency_ms": 400.0,
+                        "rollout_timeout_seconds": 30.0,
                     },
                 },
                 "updated_at": "2026-11-01T10:15:02.300Z",
@@ -138,6 +140,8 @@ CORRUPT_FILES = [
     without(f"{ENTRY}.in_flight.health_check.max_error_rate"),
     with_value(f"{ENTRY}.in_flight.health_check.max_error_rate", 5),
     with_value(f"{ENTRY}.in_flight.health_check.required_consecutive", 0),
+    without(f"{ENTRY}.in_flight.health_check.rollout_timeout_seconds"),
+    with_value(f"{ENTRY}.in_flight.health_check.rollout_timeout_seconds", -1),
     with_value(f"{ENTRY}.in_flight.health_check.attempts", True),
     with_value(f"{ENTRY}.in_flight.health_check.surprise", 1),
 ]

@@ -388,7 +388,7 @@ def test_repair_a_corrupt_target_file_by_deleting_it(world: World) -> None:
 
     blocked = world.deploy("1.6.0")
     assert blocked.outcome is Outcome.BLOCKED
-    assert blocked.steps[-1].message == "drift: recorded 1.4.2, running None"
+    assert blocked.steps[-1].message == "drift: recorded 1.4.2, running nothing"
     assert world.recover().final_state == FinalState(EnvStatus.STABLE, "1.4.2")
     assert world.simulated.running_version(ENV) == "1.4.2"
     assert world.deploy("1.6.0").outcome is Outcome.SUCCEEDED
@@ -409,3 +409,19 @@ def test_deleting_the_target_file_needs_a_recover_per_environment(world: World) 
     )
     assert blocked.outcome is Outcome.BLOCKED
     assert json.loads(world.simulated.path.read_text(encoding="utf-8")).keys() == {ENV}
+
+
+def test_messages_say_nothing_rather_than_none(world: World) -> None:
+    world.deploy("1.5.0")  # a failed first deploy: a record, with nothing active
+    world.simulated.apply(ENV, "9.9.9")
+
+    assert world.deploy("1.6.0").steps[-1].message == "drift: recorded nothing, running 9.9.9"
+    assert world.recover().steps[0].message.startswith("STABLE, running 9.9.9, restoring nothing;")
+    assert world.recover().steps[0].message.startswith("nothing to recover: STABLE @ nothing;")
+
+
+def test_recover_says_when_nothing_is_running(world: World) -> None:
+    world.deploy("1.4.2")
+    world.simulated.remove(ENV)
+
+    assert world.recover().steps[0].message.startswith("STABLE, running nothing, restoring 1.4.2;")

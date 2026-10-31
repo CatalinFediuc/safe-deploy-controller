@@ -77,3 +77,8 @@ def test_intent_is_saved_before_the_target_is_touched(world: World) -> None:
     world.simulated.apply = apply  # type: ignore[method-assign]
     world.deploy("1.4.2")
     assert seen == [EnvStatus.DEPLOYING]
+
+
+def test_first_deploy_says_nothing_was_active(world: World) -> None:
+    result = world.deploy("1.4.2")
+    assert result.steps[1].message == "STABLE @ nothing; lock acquired"

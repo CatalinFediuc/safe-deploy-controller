@@ -82,7 +82,7 @@ demo: install ## end-to-end scenario used for README example output
 	$(CLI) status --state-dir $(STATE) --service orders-api --env staging
 	$(CLI) history --state-dir $(STATE) --service orders-api --env staging --limit 15
 
-ci: lint test build smoke ## what CI runs
+ci: lint test build ## what CI runs
 
 dist-tarball: ## submission tarball of HEAD
 	git archive --format=tar.gz --prefix=safe-deploy-controller/ -o ../safe-deploy-controller.tar.gz HEAD

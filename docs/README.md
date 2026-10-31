@@ -232,7 +232,7 @@ The user agreed all four proposed items:
 
 ## Phase 5: CLI and rendering
 
-Built on 2026-10-31, and not committed yet.
+Delivered in [PR #9](https://github.com/CatalinFediuc/safe-deploy-controller/pull/9).
 
 ### What we built
 
@@ -272,7 +272,7 @@ The user chose the minimal JSON error and run IDs with a timestamp. Real adapter
 - `make demo` was run by hand, and every step ended as its label says.
 - We injected 55 deliberate bugs into a throwaway copy. The tests now catch all 55.
 - SIGINT, SIGTERM and SIGHUP are each sent to a real `deployctl` process during a deploy. Each exits 130, releases the lock and leaves an explicit in-flight state.
-- GitHub CI hasn't run yet, because nothing is pushed.
+- GitHub CI passed on Python 3.11, 3.12 and 3.13.
 
 ### Left for later phases
 

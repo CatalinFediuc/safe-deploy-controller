@@ -181,7 +181,7 @@ Rationale: distinct codes let CI/CD branch on "bad input" vs "bad release, alrea
 - **Probe timeout/error during verify:** counts as a failed probe (fail closed); verification continues until it passes or cannot pass.
 - **Unexpected exception after `DEPLOYING` was saved:** best-effort rollback. If that raises too, leave the explicit in-flight state, exit 1, and print the `recover` instruction.
 - **SIGINT / hard kill:** do **not** take more automated actions after being told to stop. In-flight state is already persisted (write-ahead); exit 130 with the `recover` instruction. The lock is released in `finally`; a SIGKILL leaves a stale lockfile that `recover --break-lock` clears (recorded in audit).
-- **Corrupt or unknown-schema `state.json`:** refuse to run (exit 1) and **never overwrite it**; the operator must inspect it.
+- **Corrupt or unknown-schema `state.json`, or corrupt `environment.json`:** refuse to run (exit 1) and **never overwrite it**; the operator must inspect it.
 - **First-ever deploy fails** (no previous known-good): rollback means removing the bad version. The env ends `STABLE` with nothing running, `rollback_status = NO_PREVIOUS_VERSION`.
 - **Rollback verification fails:** mark `NEEDS_ATTENTION`, exit 5, no further automatic actions. The new version is still recorded as failed, conservatively. Note in the README that when the rollback also fails, the root cause is likely environmental (e.g. a dependency outage), so the operator may legitimately use `--allow-known-bad` later.
 
@@ -245,6 +245,9 @@ Rationale: distinct codes let CI/CD branch on "bad input" vs "bad release, alrea
 - Each list is the sequence of probe responses for that version; **the last entry repeats**.
 - `"timeout"` raises `ProbeTimeout`; `"error"` raises `ProbeError`. Both count as failed probes.
 - A service/version that is not listed returns "no data", which is **unhealthy** (P1).
+- An entry may leave out a metric or set it to `null`, which is how a fixture expresses a missing metric.
+- The profile is checked when loaded. A malformed one raises `HealthProfileError`, so a typo can't look like an unhealthy release and trigger a rollback.
+- The position in a sequence is kept per environment and version, in memory, so each process starts from the first entry.
 - `examples/health/dependency-outage.json` makes every version unhealthy, which is used to demo a failed rollback.
 
 **Verify algorithm** (pure function, `FakeClock` in tests):
@@ -256,7 +259,7 @@ for attempt in 1..attempts:
     sample = probe.sample(...)  (timeout/error -> failed probe)
     ok = error_rate <= max_error_rate and p99 <= max_p99   # inclusive boundaries, documented
          (a missing metric -> not ok)
-    consecutive = consecutive + 1 if ok else 0
+    consecutive = consecutive + 1 if ok else 0   # a running-version mismatch is a failed attempt, not probed
     if consecutive >= required: PASS
     if remaining attempts < required - consecutive: FAIL early (cannot pass any more)
     clock.sleep(interval)
@@ -297,6 +300,8 @@ FAIL
 ```json
 { "orders-api/staging": { "running_version": "1.4.2", "updated_at": "2026-11-01T10:15:02.290Z" } }
 ```
+
+**Strict on load**, like the ledger: a malformed entry or unknown key raises `StateCorruptError`, and the file is never overwritten. An environment with nothing running has no entry, so `remove()` deletes it and `running_version` is never `null`.
 
 ### 5.5 Audit log: `<state-dir>/audit.jsonl` (append-only, one event per line, fsync per append)
 
@@ -400,7 +405,7 @@ safe-deploy-controller/
 ├── tests/
 │   ├── conftest.py                   # FakeClock, tmp state dir, run_ids, make_manifest, fakes
 │   ├── unit/ test_models.py test_manifest.py test_state.py test_fileio.py test_audit.py
-│   │         test_clock.py test_health.py test_transitions.py
+│   │         test_clock.py test_health.py test_target.py test_transitions.py
 │   ├── scenarios/ test_deploy_success.py test_invalid_input.py test_failed_health.py
 │   │              test_repeated_execution.py test_crash_recovery.py test_locking.py
 │   └── cli/ test_cli.py test_zipapp_smoke.py
@@ -1101,8 +1106,9 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 1. Models + validation | Done | [PR #1](https://github.com/CatalinFediuc/safe-deploy-controller/pull/1) |
 | 2. State, lock, audit, clock | Done | [PR #2](https://github.com/CatalinFediuc/safe-deploy-controller/pull/2) |
 | 2a. Pre-Phase 3 adjustments | Done | [PR #3](https://github.com/CatalinFediuc/safe-deploy-controller/pull/3) |
-| 3. Target + health | Next | |
-| 4 to 7 | Not started | |
+| 3. Target + health | Done | branch `feat/phase-3-target-health` |
+| 4. Controller | Next | |
+| 5 to 7 | Not started | |
 
 ### 16.2 Changes from the original plan
 
@@ -1120,6 +1126,10 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 2a | Added `parse_health_check()`, shared by manifests and the ledger | One set of rules, and a hand-edited ledger can't loosen a rollback | 5.3 |
 | 2a | Added `fileio.py` | `target.py` needs the same write without importing the ledger | 3, 5.3, 7, 10 |
 | 2a | `make_manifest` and `run_ids` in `conftest.py`; mypy covers tests and scripts | Ready for the Phase 4 scenarios; a fake that drifts from its protocol fails the build | 7, 9.1 |
+| 3 | `environment.json` is read strictly, and a corrupt file raises `StateCorruptError` | `apply` rewrites the whole file, so it must not write over something it can't read | 4.5, 5.4 |
+| 3 | Added `HealthProfileError`; profiles are checked when loaded | A typo in a profile would otherwise look like an unhealthy release and trigger a rollback | 5.2 |
+| 3 | A running-version mismatch is a failed attempt and skips the probe | Health of another version says nothing about the one being verified | 5.2 |
+| 3 | `is_finite_number()` in `manifest.py` is now public | Profile metrics need the same check as thresholds | none |
 
 ### 16.3 Open items
 
@@ -1133,16 +1143,19 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 - `in_flight.to_version` must be a string, but a drift `recover` with no last known-good version has no target to record. Decide what goes there.
 - Let `Recorder` bind partial identity. `bind()` takes a full `Manifest`, but rejected runs and `recover` don't have one.
 - Make `ManifestError` carry the parsed service and environment, so rejected runs are audited with them.
+- Handle errors raised while `verify()` reads the target. Probe failures count as failed probes, but a corrupt `environment.json` or an `OSError` propagates, so it must reach the unexpected-exception path in 4.5.
 
 **Phase 4, proposed and not yet agreed**
 
 - Remove a version from `failed_versions` when an `--allow-known-bad` deploy succeeds, and don't add duplicates on retry.
 - Give `recover` its own path instead of reusing `_rollback` as written, because `_rollback` reads `state.in_flight.to_version`, and don't mark anything as failed for drift.
+- Record the probe count for a passed verification. `Verdict.probes` has it, but the summary `3/3 consecutive healthy` from 5.6 doesn't show that a flaky version needed extra attempts.
 
 **Phase 5, required**
 
 - Make the `history` reader tolerate a partial last line in `audit.jsonl`, which a hard kill during an append can leave.
 - Add `make smoke` back to `make ci`.
+- Build `FixtureHealthProbe` before taking the lock, and give `HealthProfileError` an exit code. Section 4.3 doesn't define one yet.
 
 **Phase 5, proposed and not yet agreed**
 

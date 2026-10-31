@@ -1157,7 +1157,7 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 3. Target + health | Done | [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6), decision review in [PR #7](https://github.com/CatalinFediuc/safe-deploy-controller/pull/7) |
 | 4. Controller | Done | [PR #8](https://github.com/CatalinFediuc/safe-deploy-controller/pull/8) |
 | 5. CLI + rendering | Done | [PR #9](https://github.com/CatalinFediuc/safe-deploy-controller/pull/9) |
-| 6. Demo + examples | Built, not committed yet | |
+| 6. Demo + examples | Done | [PR #11](https://github.com/CatalinFediuc/safe-deploy-controller/pull/11) |
 | 7. Package, CI, docs | Next | |
 
 ### 16.2 Changes from the original plan

@@ -27,8 +27,8 @@ All on 2026-10-31, local time (UTC+2). These windows come from commit and PR tim
 | Phase 4 | 11:37 to 11:56 | 19m |
 | **Total to end of Phase 4** | 07:19 to 11:56 | **4h 37m** |
 | Phase 5 review and build | 12:01 to 14:25 | 2h 24m |
-| **Total so far** | 07:19 to 14:25 | **7h 6m** |
-| Phase 6 | not committed yet | fill in from the PR timestamps |
+| Phase 6 | 14:36 to 14:52 | 16m |
+| **Total so far** | 07:19 to 14:52 | **7h 33m** |
 
 The 07:19 start is the repository directory's creation time. Git can't separate Phases 0 and 1.
 

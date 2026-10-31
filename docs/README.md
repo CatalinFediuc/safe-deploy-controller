@@ -283,7 +283,7 @@ The user chose the minimal JSON error and run IDs with a timestamp. Real adapter
 
 ## Phase 6: demo and examples
 
-Built on 2026-10-31, and not committed yet.
+Delivered in [PR #11](https://github.com/CatalinFediuc/safe-deploy-controller/pull/11).
 
 ### What we built
 
@@ -306,7 +306,8 @@ Built on 2026-10-31, and not committed yet.
 
 ### How it was verified
 
-- `make ci` passed locally on Python 3.12, and the test suite passed locally on Python 3.11.
+- `make ci` passed locally on Python 3.12, with 570 tests and 100% branch coverage. The test suite also passed locally on Python 3.11, and GitHub CI passed on Python 3.11, 3.12 and 3.13.
+- We injected 6 bugs into the changed messages, and the tests caught all 6.
 - The tests now include the path-traversal step, in both the controller and CLI versions of the demo sequence.
 - `make demo` passed with `$USER` unset.
 - The README's quick start was followed from a clean copy of the repo, with a fresh virtual environment.

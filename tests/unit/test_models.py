@@ -18,6 +18,7 @@ def test_exit_codes_match_the_documented_contract() -> None:
         Outcome.SUCCEEDED: 0,
         Outcome.NO_OP: 0,
         Outcome.RECOVERED: 0,
+        Outcome.VALID: 0,
         Outcome.REJECTED: 3,
         Outcome.ROLLED_BACK: 4,
         Outcome.ROLLBACK_FAILED: 5,

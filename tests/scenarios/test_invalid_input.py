@@ -33,7 +33,9 @@ def snapshot(world: World) -> tuple[bytes | None, bytes | None]:
 @pytest.mark.parametrize("overrides", INVALID_OVERRIDES)
 def test_t3_t4_invalid_manifest_changes_nothing(world: World, overrides: dict[str, Any]) -> None:
     before = snapshot(world)
-    result = world.controller().deploy(world.manifest("1.4.2", **overrides), DeployOptions())
+    result = world.controller().deploy(
+        world.manifest("1.4.2", **overrides), world.artifact_dir, DeployOptions()
+    )
 
     assert result.outcome is Outcome.REJECTED
     assert result.exit_code is ExitCode.REJECTED
@@ -50,7 +52,9 @@ def test_t3_t4_invalid_manifest_leaves_an_existing_env_identical(
     world.deploy("1.4.2")
     world.target.calls.clear()
     before = snapshot(world)
-    result = world.controller().deploy(world.manifest("1.6.0", **overrides), DeployOptions())
+    result = world.controller().deploy(
+        world.manifest("1.6.0", **overrides), world.artifact_dir, DeployOptions()
+    )
 
     assert result.outcome is Outcome.REJECTED
     assert snapshot(world) == before
@@ -59,7 +63,7 @@ def test_t3_t4_invalid_manifest_leaves_an_existing_env_identical(
 
 def test_t3_all_errors_are_listed_and_audited(world: World) -> None:
     path = world.manifest("1.5", environment="qa", change_id="1042")
-    result = world.controller().deploy(path, DeployOptions())
+    result = world.controller().deploy(path, world.artifact_dir, DeployOptions())
 
     message = result.steps[0].message
     assert "environment: 'qa'" in message
@@ -69,7 +73,7 @@ def test_t3_all_errors_are_listed_and_audited(world: World) -> None:
 
 def test_rejected_run_is_audited_with_the_declared_identity(world: World) -> None:
     path = world.manifest("1.5", environment="qa")
-    result = world.controller().deploy(path, DeployOptions())
+    result = world.controller().deploy(path, world.artifact_dir, DeployOptions())
 
     assert (result.service, result.environment) == ("orders-api", "qa")
     event = world.audit_events()[0]
@@ -81,7 +85,7 @@ def test_rejected_run_is_audited_with_the_declared_identity(world: World) -> Non
 def test_identity_that_cannot_be_read_stays_null(world: World, content: str) -> None:
     path = world.manifest("1.4.2")
     path.write_text(content, encoding="utf-8")
-    result = world.controller().deploy(path, DeployOptions())
+    result = world.controller().deploy(path, world.artifact_dir, DeployOptions())
     assert result.outcome is Outcome.REJECTED
     assert (result.service, result.environment) == (None, None)
     event = world.audit_events()[0]
@@ -89,7 +93,9 @@ def test_identity_that_cannot_be_read_stays_null(world: World, content: str) -> 
 
 
 def test_missing_manifest_is_rejected(world: World) -> None:
-    result = world.controller().deploy(world.root / "absent.json", DeployOptions())
+    result = world.controller().deploy(
+        world.root / "absent.json", world.artifact_dir, DeployOptions()
+    )
     assert result.outcome is Outcome.REJECTED
 
 

@@ -25,7 +25,9 @@ All on 2026-10-31, local time (UTC+2). These windows come from commit and PR tim
 | Phase 3 | 10:52 to 11:08 | 16m |
 | Phase 3 decision review | 11:08 to 11:37 | 29m |
 | Phase 4 | 11:37 to 11:56 | 19m |
-| **Total so far** | 07:19 to 11:56 | **4h 37m** |
+| **Total to end of Phase 4** | 07:19 to 11:56 | **4h 37m** |
+| Phase 5 review and build | 12:01 to 14:25 | 2h 24m |
+| **Total so far** | 07:19 to 14:25 | **7h 6m** |
 
 The 07:19 start is the repository directory's creation time. Git can't separate Phases 0 and 1.
 
@@ -96,8 +98,19 @@ The prompts for these phases were not logged. Add what you remember. The accepte
 - **Caught by reading the draft:** a double save that could have left `STABLE` with a run in flight, and a lost `recover` instruction. Neither had failed a test.
 - **Verification:** the first test run gave 100% branch coverage, but Claude's own review still found weak tests, including one that checked nothing. Of 56 injected bugs, 3 survived at first, and each one showed a missing assertion.
 
+### Phase 5: CLI and rendering
+
+- **Asked:** start Phase 5, but first review all the documentation and settle any open points.
+- **Claude found, beyond the tracked items:** by trying suspect paths against the merged code, it found that `recover` could remove a running service, that the audit log recorded no outcome or override, that a torn line swallowed the next event, and that SIGHUP left the lock behind. Reading the docs alone had not shown these.
+- **Decided by the user:** nine questions in three batches. They followed Claude's recommendation on most, chose the minimal JSON error over one with `run_id`, and chose run IDs with a timestamp over random hex. They kept real adapters, a cross-host lock and durable state as limitations for now, against Claude's recommendation of a new phase, and may take them up after a working demo.
+- **Changed from Phase 4:** the user accepted Claude's recommendation to reverse its own Phase 4 decision, so a rollback that can't finish exits 5, not 1.
+- **Claude decided, for review:** `--state-dir` is not on `validate`, and a missing `$USER` makes `--actor` required. Claude also put `--actor` on `recover` only, which the user accepted, along with a deploy's audit showing the manifest's `requested_by` rather than who ran it.
+- **Caught by reading the tests:** Claude's first CLI tests included an assertion that could never fail. Fixing it showed its expected list was wrong.
+- **Verification:** 2 of 55 injected bugs survived at first, and each showed a weak test. Stop signals are tested against a real process.
+
 ## Useful for `AI_PROCESS.md`
 
 - Keeping "proposed" separate from "agreed" in the plan stopped AI suggestions from reading as decisions.
 - Passing tests were not treated as enough. Injected bugs found a real gap that 100% coverage had missed.
 - CI results were confirmed from each job's conclusion, because a pipeline's exit code can hide the real result.
+- Trying suspect paths against the real code found problems that a documentation review had missed, including one that could remove a running service.

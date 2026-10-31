@@ -1,8 +1,9 @@
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from deployctl.audit import AuditLog, Recorder
+from deployctl.audit import AuditLog, NullAudit, Recorder
 from deployctl.clock import Clock, format_timestamp
 from deployctl.errors import LockHeld, ManifestError, RecoveryRequired, StateCorruptError
 from deployctl.health import HealthProbe, verify
@@ -22,6 +23,8 @@ from deployctl.state import StateStore, check_transition
 from deployctl.target import DeploymentTarget
 
 _RUN_RECOVER = "run `deployctl recover`"
+_INTERRUPTED = "interrupted; taking no further action"
+_SAFE_TO_RERUN = "nothing changed; safe to run again"
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,40 @@ def _is_downgrade(version: str, active: str | None) -> bool:
     return active is not None and _version_key(version) < _version_key(active)
 
 
+def _flags_used(opts: DeployOptions) -> str:
+    flags = (
+        ("--dry-run", opts.dry_run),
+        ("--allow-known-bad", opts.allow_known_bad),
+        ("--allow-downgrade", opts.allow_downgrade),
+    )
+    return "".join(f"; {flag}" for flag, used in flags if used)
+
+
+def _load(rec: Recorder, manifest_path: Path, artifact_dir: Path) -> Manifest | DeploymentResult:
+    """The valid manifest, or the finished result of a run that went no further."""
+    try:
+        manifest = load_manifest(manifest_path, artifact_dir)
+    except ManifestError as err:
+        rec.bind_environment(err.service, err.environment)
+        rec.step(Stage.VALIDATE, StepResult.FAIL, str(err))
+        return rec.finish(Outcome.REJECTED, next_action="fix the manifest; nothing changed")
+    except KeyboardInterrupt:
+        rec.step(Stage.VALIDATE, StepResult.FAIL, _INTERRUPTED)
+        return rec.finish(Outcome.INTERRUPTED, next_action=_SAFE_TO_RERUN)
+    rec.bind(manifest)
+    rec.step(Stage.VALIDATE, StepResult.PASS, "manifest valid; sha256 verified")
+    return manifest
+
+
+def validate(
+    manifest_path: Path, artifact_dir: Path, clock: Clock, run_id: str
+) -> DeploymentResult:
+    """Check a manifest with no state and no audit trail, so it can run in CI on every PR."""
+    rec = Recorder(NullAudit(), clock, run_id)
+    loaded = _load(rec, manifest_path, artifact_dir)
+    return loaded if isinstance(loaded, DeploymentResult) else rec.finish(Outcome.VALID)
+
+
 class DeploymentController:
     """Drives a release through its stages, and owns every change of environment status."""
 
@@ -61,7 +98,6 @@ class DeploymentController:
         probe: HealthProbe,
         audit: AuditLog,
         clock: Clock,
-        artifact_dir: Path,
         run_id_factory: Callable[[], str],
     ) -> None:
         self._store = store
@@ -69,20 +105,16 @@ class DeploymentController:
         self._probe = probe
         self._audit = audit
         self._clock = clock
-        self._artifact_dir = artifact_dir
         self._run_id_factory = run_id_factory
 
-    def deploy(self, manifest_path: Path, opts: DeployOptions) -> DeploymentResult:
+    def deploy(
+        self, manifest_path: Path, artifact_dir: Path, opts: DeployOptions
+    ) -> DeploymentResult:
         rec = self._recorder()
         # Before the lock and before state is read: a bad manifest must change nothing.
-        try:
-            manifest = load_manifest(manifest_path, self._artifact_dir)
-        except ManifestError as err:
-            rec.bind_environment(err.service, err.environment)
-            rec.step(Stage.VALIDATE, StepResult.FAIL, str(err))
-            return rec.finish(Outcome.REJECTED, next_action="fix the manifest; nothing changed")
-        rec.bind(manifest)
-        rec.step(Stage.VALIDATE, StepResult.PASS, "manifest valid; sha256 verified")
+        manifest = _load(rec, manifest_path, artifact_dir)
+        if isinstance(manifest, DeploymentResult):
+            return manifest
         return self._locked(
             rec,
             Stage.PREFLIGHT,
@@ -149,12 +181,12 @@ class DeploymentController:
             rec.step(
                 in_flight.stage if in_flight else stage,
                 StepResult.FAIL,
-                "interrupted; taking no further action",
+                _INTERRUPTED,
             )
             return rec.finish(
                 Outcome.INTERRUPTED,
                 state=state,
-                next_action=_RUN_RECOVER if in_flight else "nothing changed; safe to run again",
+                next_action=_RUN_RECOVER if in_flight else _SAFE_TO_RERUN,
             )
 
     def _deploy(self, manifest: Manifest, opts: DeployOptions, rec: Recorder) -> DeploymentResult:
@@ -167,7 +199,7 @@ class DeploymentController:
         rec.step(
             Stage.PREFLIGHT,
             StepResult.PASS,
-            f"{state.status} @ {state.active_version}; lock acquired",
+            f"{state.status} @ {state.active_version}; lock acquired{_flags_used(opts)}",
         )
         if opts.dry_run:
             return rec.finish(Outcome.NO_OP, state=state, next_action="dry-run: no changes made")
@@ -276,7 +308,15 @@ class DeploymentController:
     def _recover(
         self, service: str, environment: str, reason: str, rec: Recorder
     ) -> DeploymentResult:
-        state = self._store.load(service, environment)
+        state = self._store.find(service, environment)
+        if state is None:
+            # An empty ledger says nothing about the target: what runs there would read as drift.
+            message = f"no record of {service}/{environment}; reason: {reason}"
+            rec.step(Stage.RECOVER, StepResult.FAIL, message)
+            return rec.finish(
+                Outcome.BLOCKED,
+                next_action="check the service, environment and --state-dir; nothing changed",
+            )
         running = self._target.running_version(state.env_key)
         good = state.last_known_good
         previous = state.in_flight
@@ -326,7 +366,11 @@ class DeploymentController:
 
         rec.step(Stage.ROLLBACK, StepResult.PASS, f"running version -> {good}")
         self._transition(state, EnvStatus.ROLLING_BACK, rec, Stage.VERIFY_ROLLBACK)
-        verdict = verify(self._probe, self._target, self._clock, state.env_key, good, spec)
+        try:
+            verdict = verify(self._probe, self._target, self._clock, state.env_key, good, spec)
+        except Exception as exc:  # a rollback nobody could confirm has failed: page a human
+            rec.step(Stage.VERIFY_ROLLBACK, StepResult.FAIL, f"verification failed: {exc}")
+            return RollbackStatus.FAILED
         result = StepResult.PASS if verdict.passed else StepResult.FAIL
         rec.step(Stage.VERIFY_ROLLBACK, result, verdict.summary)
         if not verdict.passed:
@@ -346,7 +390,8 @@ class DeploymentController:
 
     def _stopped(self, state: EnvironmentState, rec: Recorder, exc: Exception) -> RecoveryRequired:
         stage = state.in_flight.stage if state.in_flight else Stage.RECOVER
-        rec.step(stage, StepResult.FAIL, f"run stopped: {exc}")
+        with suppress(OSError):  # the audit log may be what failed; keep the instruction anyway
+            rec.step(stage, StepResult.FAIL, f"run stopped: {exc}")
         return RecoveryRequired(f"{state.env_key}: {exc}; {_RUN_RECOVER}")
 
     def _transition(

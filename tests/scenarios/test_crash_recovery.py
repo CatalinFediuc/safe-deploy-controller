@@ -113,7 +113,7 @@ def test_t21_recover_after_a_crash_uses_the_stored_thresholds(world: World) -> N
     faulty = FaultyTarget(world.target, "apply", error=SimulatedCrash())
     with pytest.raises(SimulatedCrash):
         world.controller(target=faulty).deploy(
-            world.manifest("1.5.0", health_check=STRICT), DeployOptions()
+            world.manifest("1.5.0", health_check=STRICT), world.artifact_dir, DeployOptions()
         )
 
     result = world.recover()
@@ -127,7 +127,9 @@ def test_t21_recover_after_a_crash_uses_the_stored_thresholds(world: World) -> N
 
 def test_t21_recover_after_needs_attention_uses_the_stored_thresholds(world: World) -> None:
     world.deploy("1.4.2")
-    world.controller(OUTAGE).deploy(world.manifest("1.6.0", health_check=STRICT), DeployOptions())
+    world.controller(OUTAGE).deploy(
+        world.manifest("1.6.0", health_check=STRICT), world.artifact_dir, DeployOptions()
+    )
     assert world.ledger().status is EnvStatus.NEEDS_ATTENTION
 
     assert world.recover().outcome is Outcome.ROLLBACK_FAILED
@@ -155,6 +157,7 @@ def test_drift_recover_uses_the_default_thresholds(world: World) -> None:
 
 
 def test_t13_drift_with_nothing_known_good_removes_what_is_running(world: World) -> None:
+    world.deploy("1.5.0")  # a failed first deploy: a record, with nothing known-good
     world.simulated.apply(ENV, "9.9.9")
 
     result = world.recover()
@@ -166,7 +169,30 @@ def test_t13_drift_with_nothing_known_good_removes_what_is_running(world: World)
     assert world.simulated.running_version(ENV) is None
 
 
+def test_recover_with_no_record_touches_nothing(world: World) -> None:
+    world.simulated.apply(ENV, "1.4.2")  # an empty ledger, from a wrong --state-dir for example
+    world.target.calls.clear()
+
+    result = world.recover()
+
+    assert result.outcome is Outcome.BLOCKED
+    assert result.exit_code is ExitCode.BLOCKED
+    assert result.next_action is not None
+    assert "--state-dir" in result.next_action
+    assert world.target.calls == []
+    assert world.simulated.running_version(ENV) == "1.4.2"
+    assert not world.store.path.exists()
+    assert "no record of orders-api/staging" in world.audit_events()[0]["message"]
+
+
+def test_a_failed_first_deploy_leaves_a_record_recover_accepts(world: World) -> None:
+    world.deploy("1.5.0")
+
+    assert world.recover().outcome is Outcome.NO_OP
+
+
 def test_crash_while_removing_drift_keeps_a_loadable_record(world: World) -> None:
+    world.deploy("1.5.0")
     world.simulated.apply(ENV, "9.9.9")
     with pytest.raises(SimulatedCrash):
         world.recover(target=FaultyTarget(world.target, "remove", error=SimulatedCrash()))
@@ -190,7 +216,7 @@ def test_recover_is_a_no_op_when_there_is_nothing_to_do(world: World) -> None:
     assert result.exit_code is ExitCode.OK
     assert world.target.calls == []
     assert world.store.path.read_bytes() == before
-    assert "operator says so" in world.audit_events()[-1]["message"]
+    assert "operator says so" in world.audit_events()[-2]["message"]
 
 
 def test_recover_records_who_and_why(world: World) -> None:
@@ -199,7 +225,8 @@ def test_recover_records_who_and_why(world: World) -> None:
     run_id = world.recover().run_id
 
     events = [event for event in world.audit_events() if event["run_id"] == run_id]
-    assert [event["stage"] for event in events] == ["recover", "rollback", "verify_rollback"]
+    stages = [event["stage"] for event in events]
+    assert stages == ["recover", "rollback", "verify_rollback", "finish"]
     assert {event["actor"] for event in events} == {"oncall"}
     assert "reason: operator says so" in events[0]["message"]
 
@@ -216,16 +243,42 @@ def test_failed_recover_stops_again_and_can_be_retried(world: World) -> None:
     assert world.recover().outcome is Outcome.RECOVERED
 
 
-def test_recover_stopped_by_a_target_error_stays_explicit(world: World) -> None:
+def test_recover_whose_verification_raises_needs_attention(world: World) -> None:
     world.deploy("1.4.2")
     world.deploy("1.6.0", profile=OUTAGE)
     # Reads: recover's own check, then the rollout wait.
     faulty = FaultyTarget(world.target, "running_version", call_no=2)
 
+    result = world.recover(target=faulty)
+
+    assert result.outcome is Outcome.ROLLBACK_FAILED
+    assert result.exit_code is ExitCode.NEEDS_ATTENTION
+    assert world.ledger().status is EnvStatus.NEEDS_ATTENTION
+    assert world.ledger().in_flight is not None
+    assert world.recover().outcome is Outcome.RECOVERED
+
+
+def test_recover_stopped_by_an_unwritable_ledger_stays_explicit(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.deploy("1.4.2")
+    world.deploy("1.6.0", profile=OUTAGE)
+    real_save = world.store.save
+    saves = iter([real_save])
+
+    def save(state: object) -> None:
+        next(saves, _disk_full)(state)  # type: ignore[arg-type]
+
+    def _disk_full(_: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(world.store, "save", save)
     with pytest.raises(RecoveryRequired, match="run `deployctl recover`"):
-        world.recover(target=faulty)
+        world.recover()
+    monkeypatch.undo()
 
     assert world.ledger().status is EnvStatus.ROLLING_BACK
+    assert world.recover().outcome is Outcome.RECOVERED
 
 
 def test_interrupted_deploy_stops_with_explicit_state(world: World) -> None:
@@ -243,6 +296,27 @@ def test_interrupted_deploy_stops_with_explicit_state(world: World) -> None:
     assert result.steps[-1].message == "interrupted; taking no further action"
     assert world.target.calls == [("apply", "1.5.0")]  # no rollback after being told to stop
     assert not world.store.lock_path.exists()
+
+
+def test_interrupted_validation_changed_nothing(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = world.manifest("1.4.2")
+
+    def interrupted(*_: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("deployctl.controller.load_manifest", interrupted)
+    result = world.controller().deploy(path, world.artifact_dir, DeployOptions())
+
+    assert result.outcome is Outcome.INTERRUPTED
+    assert result.exit_code is ExitCode.INTERRUPTED
+    assert result.next_action == "nothing changed; safe to run again"
+    assert result.final_state is None
+    assert not world.store.path.exists()
+    assert not world.store.lock_path.exists()
+    assert world.target.calls == []
+    assert world.audit_events()[-1]["outcome"] == "INTERRUPTED"
 
 
 def test_interrupted_preflight_changed_nothing(world: World) -> None:
@@ -323,7 +397,7 @@ def test_repair_a_corrupt_target_file_by_deleting_it(world: World) -> None:
 def test_deleting_the_target_file_needs_a_recover_per_environment(world: World) -> None:
     world.deploy("1.4.2")
     prod = world.manifest("1.4.2", environment="prod")
-    world.controller().deploy(prod, DeployOptions())
+    world.controller().deploy(prod, world.artifact_dir, DeployOptions())
     world.simulated.path.unlink()
 
     world.recover()
@@ -331,7 +405,7 @@ def test_deleting_the_target_file_needs_a_recover_per_environment(world: World) 
     assert world.simulated.running_version(ENV) == "1.4.2"
     assert world.simulated.running_version("orders-api/prod") is None
     blocked = world.controller().deploy(
-        world.manifest("1.6.0", environment="prod"), DeployOptions()
+        world.manifest("1.6.0", environment="prod"), world.artifact_dir, DeployOptions()
     )
     assert blocked.outcome is Outcome.BLOCKED
     assert json.loads(world.simulated.path.read_text(encoding="utf-8")).keys() == {ENV}

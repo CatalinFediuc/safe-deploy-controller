@@ -229,3 +229,54 @@ The user agreed all four proposed items:
 - A service with no traffic can produce NaN, fail verification and be marked known-bad. This is a known limitation for now.
 
 [Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.
+
+## Phase 5: CLI and rendering
+
+Delivered in [PR #9](https://github.com/CatalinFediuc/safe-deploy-controller/pull/9).
+
+### What we built
+
+- `cli.py`: the `validate`, `deploy`, `recover`, `status` and `history` subcommands, adapter setup in one function, signal handling and exit codes.
+- `render.py`: text and JSON output for results, `status` and `history`.
+- `AuditLog.history()`: groups events by run and tolerates unreadable lines.
+- `make smoke` is back in `make ci`.
+
+### Decided before building
+
+A review of the docs against the code found problems the plan didn't list. Each was reproduced first, then decided with the user. Section 16.4 of the plan has the full list.
+
+- **`recover` could remove a running service.** With an empty ledger, from a wrong `--state-dir` for example, it read the running version as drift and removed it, then reported `RECOVERED`. It now refuses any environment with no ledger record. The drift tests that relied on this now set up a real record.
+- **The audit log had no outcome.** It recorded steps but never how a run ended, so `history` had nothing to show, a dry run read like a run that died, and `--allow-downgrade` left no trace. Every run now ends with a `finish` event, and the preflight message names any override.
+- **A torn audit line swallowed the next event.** The plan only asked `history` to tolerate a bad last line, but the next `append` joined onto it. `append` now ends the line first, and `history` reports what it skipped.
+- **SIGHUP had the same problem as SIGTERM.** Both left the lock behind, so an SSH drop would have blocked every later deploy.
+- **A rollback that couldn't finish no longer exits 1.** This reverses a Phase 4 decision, because exit 1 would not page anyone.
+
+The user chose the minimal JSON error and run IDs with a timestamp. Real adapters, a lock across hosts and durable state stay documented limitations for now, and the user may take them up after a working demo.
+
+### Behavior to know about
+
+- `validate` writes nothing, not even to the audit log.
+- `history` skips name validation, so refused attempts under names such as `qa` can be found. A rejected manifest that was too broken to name a service and environment can't be listed.
+- The demo's `invalid-schema.json` declares `qa`, so it does not appear in `history --env staging`.
+- `status` exits 0 for `NEEDS_ATTENTION` and for drift, so scripts should read the JSON.
+- With `--output json`, a failure with no result prints `{"error", "exit_code"}`, which has no `run_id`.
+
+### Problems along the way
+
+- **Sloppy tests:** coverage was already 100% when review found a demo assertion that could never fail, and a parametrized test with a meaningless `replace`. Fixing the assertion showed the expected list was wrong too.
+- **Weak tests:** 2 of 55 injected bugs survived at first. The signal-restore test passed because an earlier test had left the handler installed, and nothing separated `RecoveryRequired` from an unexpected error.
+
+### How it was verified
+
+- `make ci` passed locally on Python 3.12, including `make smoke` on the built `.pyz`. The test suite also passed locally on Python 3.11.
+- `make demo` was run by hand, and every step ended as its label says.
+- We injected 55 deliberate bugs into a throwaway copy. The tests now catch all 55.
+- SIGINT, SIGTERM and SIGHUP are each sent to a real `deployctl` process during a deploy. Each exits 130, releases the lock and leaves an explicit in-flight state.
+- GitHub CI passed on Python 3.11, 3.12 and 3.13.
+
+### Left for later phases
+
+- Phase 6 pastes the demo output into the README.
+- `test_zipapp_smoke` and the README's repair steps belong to Phase 7.
+
+[Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.

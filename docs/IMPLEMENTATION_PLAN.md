@@ -149,13 +149,14 @@ Enforce this with an explicit `ALLOWED_TRANSITIONS` table; an illegal transition
 | `SUCCEEDED` | 0 | New version verified and marked known-good | `STABLE @ new` |
 | `NO_OP` | 0 | Requested version already active (or `--dry-run`) | unchanged |
 | `RECOVERED` | 0 | `recover` restored last known-good | `STABLE @ lkg` |
+| `VALID` | 0 | `validate` found no problems; it writes nothing | unchanged |
 | — | 1 | Internal error / corrupt state (bug or disk issue) | unchanged or explicit in-flight |
-| — | 2 | CLI usage error (argparse), including a missing or bad `--health-profile` | unchanged |
+| — | 2 | CLI usage error (argparse), including a missing or bad `--health-profile`, or a bad `--service` or `--env` | unchanged |
 | `REJECTED` | 3 | Manifest invalid; nothing was touched | unchanged |
 | `ROLLED_BACK` | 4 | Change failed; previous known-good restored and verified | `STABLE @ lkg` |
 | `ROLLBACK_FAILED` | 5 | Rollback failed; **page a human**, run `recover` | `NEEDS_ATTENTION` |
-| `BLOCKED` | 6 | Preflight gate refused (lock, in-flight, drift, known-bad, downgrade) | unchanged |
-| `INTERRUPTED` | 130 | SIGINT during a run; in-flight state left explicit | explicit in-flight |
+| `BLOCKED` | 6 | Preflight gate refused (lock, in-flight, drift, known-bad, downgrade), or no ledger record for `recover` or `status` | unchanged |
+| `INTERRUPTED` | 130 | SIGINT, SIGTERM or SIGHUP during a run; in-flight state left explicit | explicit in-flight |
 
 Rationale: distinct codes let CI/CD branch on "bad input" vs "bad release, already mitigated" vs "humans needed now".
 
@@ -173,6 +174,7 @@ Rationale: distinct codes let CI/CD branch on "bad input" vs "bad release, alrea
 | Drift: running version ≠ recorded active version | `BLOCKED`: run `recover` to reconcile | 6 |
 | Requested version < active (semver) | `BLOCKED` unless `--allow-downgrade` (rollback is the path for going back) | 6 |
 | `recover` when already `STABLE` and no drift | `NO_OP` (recover is idempotent too) | 0 |
+| `recover` with no ledger record for the environment | `BLOCKED`: nothing touched, because an empty ledger says nothing about what is running | 6 |
 
 ### 4.5 Failure handling rules
 
@@ -181,8 +183,8 @@ Rationale: distinct codes let CI/CD branch on "bad input" vs "bad release, alrea
 - **Known-bad marks:** a version is marked only if at least one probe reached it. A stalled rollout, a failed `apply`, a crash or a version overwritten during verification all roll back without a mark. Probe timeouts and "no data" do mark it, failing closed. `recover` never marks anything.
 - **Probe timeout/error during verify:** counts as a failed probe (fail closed); verification continues until it passes or cannot pass.
 - **Rollout not finished within `rollout_timeout_seconds`:** verification fails with no probes run, and the normal rollback follows. The wait uses no health attempts, and the lock stays held throughout.
-- **Unexpected exception after `DEPLOYING` was saved:** best-effort rollback. If that raises too, leave the explicit in-flight state and raise `RecoveryRequired`, which carries the `recover` instruction and exits 1.
-- **SIGINT / hard kill:** do **not** take more automated actions after being told to stop. In-flight state is already persisted (write-ahead); exit 130 with the `recover` instruction. The lock is released in `finally`; a SIGKILL leaves a stale lockfile that `recover --break-lock` clears (recorded in audit).
+- **Unexpected exception after `DEPLOYING` was saved:** best-effort rollback. An error while verifying the rollback, such as an unreadable target, is a failed rollback: `NEEDS_ATTENTION`, exit 5. If the ledger or audit log can't be written, leave the explicit in-flight state and raise `RecoveryRequired`, which carries the `recover` instruction and exits 1.
+- **SIGINT, SIGTERM, SIGHUP / hard kill:** do **not** take more automated actions after being told to stop. In-flight state is already persisted (write-ahead); exit 130 with the `recover` instruction. The lock is released in `finally`; a SIGKILL leaves a stale lockfile that `recover --break-lock` clears (recorded in audit).
 - **Corrupt or unknown-schema `state.json`, or corrupt `environment.json`:** refuse to run (exit 1) and **never overwrite it**; the operator must inspect it.
 - **First-ever deploy fails** (no previous known-good): rollback means removing the bad version. The env ends `STABLE` with nothing running, `rollback_status = NO_PREVIOUS_VERSION`.
 - **Rollback verification fails:** mark `NEEDS_ATTENTION`, exit 5, no further automatic actions. A version with a measured failure is still recorded as failed, conservatively. Note in the README that when the rollback also fails, the root cause is likely environmental (e.g. a dependency outage), so the operator may legitimately use `--allow-known-bad` later.
@@ -318,7 +320,13 @@ A `recover` replaces the record with its own, so a crash during `recover` stays 
 
 Rejected attempts are audited too (service/env may be `null` if the manifest could not be parsed). Who tried what, and why it was refused, is useful audit data.
 
-`seq` restarts at 1 for each run, so readers must group events by `run_id`.
+`seq` restarts at 1 for each run, so readers must group events by `run_id`. A real `run_id` looks like `r-20261031T120000-3f9a1c`, and the shorter `r-0007` in these examples stands in for it.
+
+Every audited run ends with one extra event, which has `"stage": "finish"` and adds `outcome`, `rollback_status` and `exit_code`. It takes the next `seq` but is not one of the result's `steps`. A run with no `finish` event died before it could report, or stopped with exit 1.
+
+The preflight message names any of `--dry-run`, `--allow-known-bad` and `--allow-downgrade` that were passed, such as `STABLE @ 1.4.2; lock acquired; --allow-downgrade`.
+
+**Reading:** a hard kill can leave a partial line. `append` ends such a line before writing, so it can't swallow the next event, and `history` skips any line it can't read and reports how many it skipped.
 
 ### 5.6 Result (stdout with `--output json`; stdout carries only JSON, diagnostics go to stderr)
 
@@ -329,6 +337,7 @@ Rejected attempts are audited too (service/env may be `null` if the manifest cou
   "service": "orders-api",
   "environment": "staging",
   "change_id": "CHG-1042",
+  "actor": "catalin",
   "from_version": "1.4.2",
   "to_version": "1.5.0",
   "outcome": "ROLLED_BACK",
@@ -347,6 +356,12 @@ Rejected attempts are audited too (service/env may be `null` if the manifest cou
 }
 ```
 
+A failure with no `Outcome` has no result, so with `--output json` stdout carries only this. It covers every error from `deployctl` itself: exit 1, a bad health profile (exit 2), an interrupt outside a run (exit 130) and "no record" (exit 6). argparse usage errors stay on stderr with nothing on stdout.
+
+```json
+{"error": "<message>", "exit_code": 1}
+```
+
 ---
 
 ## 6. CLI design
@@ -360,15 +375,20 @@ deployctl status   --service NAME --env ENV
 deployctl recover  --service NAME --env ENV --reason TEXT --health-profile PATH [--break-lock]
 deployctl history  --service NAME --env ENV [--limit N]
 
-Common options (on every subcommand via an argparse parent parser):
-  --state-dir DIR        default .deployctl  (env: DEPLOYCTL_STATE_DIR)
-  --output {text,json}   default text
-  --actor NAME           default $USER; recorded in audit for recover
+Options shared through argparse parent parsers:
+  --output {text,json}   default text; every subcommand
+  --state-dir DIR        default .deployctl  (env: DEPLOYCTL_STATE_DIR); all but validate
+  --actor NAME           default $USER; recover only, recorded in audit
 ```
 
+- A subcommand is required, so `deployctl` alone is a usage error (exit 2).
 - **No default health source.** If `--health-profile` is missing, `deploy` errors (fail closed rather than assume healthy). A missing or malformed profile file exits 2 as well, checked before the lock and before state is read. The same applies to `recover`.
-- `validate` needs no state, so it can run in CI on every manifest PR (shift-left).
-- `recover` requires `--reason` (audited). Behavior: no-op if `STABLE` with no drift; otherwise roll back to last known-good (or remove if none), verify, then `RECOVERED` (exit 0) or `ROLLBACK_FAILED` (exit 5). Verification uses the thresholds stored in `in_flight.health_check`; drift has no in-flight record, so it uses the defaults. `recover` has its own path, shares only the restore step with a deploy's rollback, and never marks a version known-bad. `--break-lock` is audited with the previous holder.
+- `validate` needs no state, so it can run in CI on every manifest PR (shift-left). It writes nothing, not even to the audit log, and returns the normal result with the outcome `VALID` or `REJECTED`.
+- `--service` must match the manifest's rule and `--env` must be one of its environments, otherwise `status` and `recover` exit 2. `history` skips this check, because rejected runs can be audited under invalid names such as `qa`.
+- `recover` requires `--reason` (audited). Behavior: `BLOCKED` if the ledger has no record for the environment, because an empty ledger, from a wrong `--state-dir` for example, says nothing about what is running. No-op if `STABLE` with no drift; otherwise roll back to last known-good (or remove if none), verify, then `RECOVERED` (exit 0) or `ROLLBACK_FAILED` (exit 5). Verification uses the thresholds stored in `in_flight.health_check`; drift has no in-flight record, so it uses the defaults. `recover` has its own path, shares only the restore step with a deploy's rollback, and never marks a version known-bad. `--break-lock` is audited with the previous holder.
+- A blank `--reason`, or no `--actor` with `$USER` unset, exits 2: the audit needs both.
+- `status` takes no lock. It shows the ledger entry, the running version and a `drift` flag, which is true when the environment is `STABLE` and the running version differs from the recorded one. It exits 0 whenever it can report, including for `NEEDS_ATTENTION`, so scripts read the JSON. With no ledger record it reports "no record" and exits 6.
+- `history` groups events by `run_id`, newest run first, and `--limit` counts runs (default 20). Each run shows its outcome, or that none was recorded; JSON output also has its events and `skipped_lines`. Events are found by service and environment, so a rejected manifest that was too broken to name them can't be listed.
 - `cli.main(argv) -> int` is what tests call. `cli.run()` does `sys.exit(main())` and is used by `__main__.py` and the zipapp. **Gotcha (verified):** `python -m zipapp -m mod:fn` generates `mod.fn()` and *discards the return value*, so pointing it at `main` would lose exit codes. Point it at `run`.
 
 **Example text output (failed health check with automatic rollback):**
@@ -633,15 +653,15 @@ class Verdict:
 
 ```python
 class DeploymentController:
-    def __init__(self, store, target, probe, audit, clock, artifact_dir, run_id_factory) -> None:
+    def __init__(self, store, target, probe, audit, clock, run_id_factory) -> None:
         ...
 
-    def deploy(self, manifest_path: Path, opts: DeployOptions) -> DeploymentResult:
+    def deploy(self, manifest_path: Path, artifact_dir: Path, opts: DeployOptions) -> DeploymentResult:
         rec = Recorder(self._audit, self._clock, run_id=self._run_id_factory())
 
         # 1. VALIDATE: pure + file reads, before lock and before state is read
         try:
-            manifest = load_manifest(manifest_path, self._artifact_dir)
+            manifest = load_manifest(manifest_path, artifact_dir)
         except ManifestError as err:
             rec.step(Stage.VALIDATE, StepResult.FAIL, "; ".join(err.errors))
             return rec.finish(Outcome.REJECTED)
@@ -1013,6 +1033,10 @@ Use `tmp_path` for every state dir, `FakeClock`, a deterministic `run_id` factor
 | T19 | Zipapp smoke | packaging | `.pyz` runs; exit codes propagate |
 | T20 | Same version, rebuilt artifact | repeated execution | `BLOCKED` (6); `apply` not called; ledger still holds the original sha |
 | T21 | `recover` after a crash or `NEEDS_ATTENTION` | failure path | rollback verified against the failed deploy's stored thresholds, not the defaults |
+| T22 | `recover` with no ledger record | ambiguous state | `BLOCKED` (6); target not touched; nothing written to the ledger |
+| T23 | SIGINT, SIGTERM or SIGHUP during a run | no ambiguous state | exit 130; lock released; explicit in-flight state; run in a real subprocess |
+| T24 | Every run's ending in the audit log | audit-friendly result | `finish` event carries `outcome`, `rollback_status`, `exit_code`; overrides and `--dry-run` named |
+| T25 | Torn `audit.jsonl` line | audit-friendly result | the next event stays readable; `history` reports the skipped line |
 
 Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguous" claim, so call it out in the README.
 
@@ -1037,7 +1061,7 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
    - *Observability gates:* compare canary vs baseline on error rate, p99 latency, saturation; SLO burn-rate check; synthetic checks; require minimum traffic for a meaningful decision; missing metrics = fail; annotate dashboards with deploy events; auto-rollback on burn.
    - *Access controls:* least privilege; deployer identity via short-lived OIDC credentials (no long-lived secrets); separation of duties; signed artifacts verified before apply; audit log shipped to tamper-evident storage.
    - *Making this controller production-grade:* replace the lockfile with a distributed lease + fencing token (etcd/Consul/DynamoDB conditional writes); state in a durable store with optimistic concurrency; real adapters behind the existing `DeploymentTarget`/`HealthProbe` ports (Kubernetes/Argo CD, Prometheus/Datadog); notifications to chat/paging on `NEEDS_ATTENTION`; metrics on deploy outcomes (change failure rate, MTTR).
-9. **Known limitations / shortcuts**: global lock, single host, no real artifact store, rollback verification reuses the new manifest's thresholds, drift `recover` uses default thresholds, no pre-release semver, no resume-from-stage after crash (recover rolls back instead), a service with no traffic can produce NaN and fail verification, a corrupt `environment.json` blocks every environment until repaired by hand.
+9. **Known limitations / shortcuts**: simulated target and health only (no real `DeploymentTarget` or `HealthProbe` adapters), global lock held across the rollout wait (up to twice `rollout_timeout_seconds` when a deploy also rolls back), single host (the lockfile doesn't work across hosts), ledger and audit log are local files, a deploy's `actor` is the manifest's self-declared `requested_by` rather than who ran it, no real artifact store, rollback verification reuses the new manifest's thresholds, drift `recover` uses default thresholds, no pre-release semver, no resume-from-stage after crash (recover rolls back instead), a service with no traffic can produce NaN and fail verification, a lost `state.json` can't be fixed with `recover` and must be restored by hand, a corrupt `environment.json` blocks every environment until repaired by hand.
    - *Repairing a corrupt `environment.json` (required):* the controller refuses the file and `recover` can't fix it (section 14), so the README must give the operator these steps:
      1. Copy the file aside and inspect it.
      2. Repair it if the correct content is clear. Otherwise delete it. Deleting affects every environment: each one then reads as nothing running, so each needs its own `recover`.
@@ -1086,7 +1110,9 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
 | Lockfile (O_EXCL) | Simple, portable, testable | No lease/fencing; production needs a distributed lock |
 | Global lock rather than per-env | Simplicity | Serializes unrelated deploys |
 | Distinct exit codes | Automation can branch on bad input vs mitigated vs page | More to document |
-| SIGINT → exit 130, no further actions | Respect the operator's stop; state already explicit | Env stays in-flight until `recover` |
+| SIGINT, SIGTERM, SIGHUP → exit 130, no further actions | Respect the stop; state already explicit. CI cancels with SIGTERM and a dropped SSH session sends SIGHUP, and left unhandled both leave the lock behind | Env stays in-flight until `recover`, even if a CI cancel interrupted a rollback |
+| `recover` refuses an environment with no ledger record | An empty ledger, from a wrong `--state-dir` for example, would read a running service as drift and remove it | A lost `state.json` needs restoring by hand |
+| A rollback whose verification raises is `ROLLBACK_FAILED` | Exit 5 is the "page a human" signal, and exit 1 also means corrupt state or a bug | `RecoveryRequired` stays for a ledger or audit that can't be written, so exit 1 can still leave a run in flight |
 | Block a rebuilt artifact at an active version | A version must mean one artifact; otherwise `NO_OP` would hide that nothing was deployed | A rebuild needs a new version number |
 | Store thresholds in `in_flight` | `recover` verifies against what the failed deploy promised, and they are validated on load so editing `state.json` cannot loosen a rollback | Larger ledger; drift still falls back to defaults |
 | Release the lock only if the run still owns it | A run whose lock was broken must not remove the next run's lock | Check-then-unlink is not atomic; fine for a single host |
@@ -1128,8 +1154,9 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 2a. Pre-Phase 3 adjustments | Done | [PR #3](https://github.com/CatalinFediuc/safe-deploy-controller/pull/3) |
 | 3. Target + health | Done | [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6), decision review in [PR #7](https://github.com/CatalinFediuc/safe-deploy-controller/pull/7) |
 | 4. Controller | Done | [PR #8](https://github.com/CatalinFediuc/safe-deploy-controller/pull/8) |
-| 5. CLI + rendering | Next | |
-| 6 to 7 | Not started | |
+| 5. CLI + rendering | Done | [PR #9](https://github.com/CatalinFediuc/safe-deploy-controller/pull/9) |
+| 6. Demo + examples | Next | |
+| 7. Package, CI, docs | Not started | |
 
 ### 16.2 Changes from the original plan
 
@@ -1157,27 +1184,21 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 4 | A successful `--allow-known-bad` deploy clears the mark, and retries add no duplicates | Agreed before Phase 4 from the proposed items | 4.4 |
 | 4 | A passed verification also shows its probe count | Agreed before Phase 4 from the proposed items | 5.6, 6 |
 | 4 | Added `RecoveryRequired` | A run that can't finish its rollback needs to carry the `recover` instruction to exit 1 | 4.5 |
+| 5 | `recover` refuses an environment with no ledger record, and `--service` and `--env` are validated | An empty ledger with something running would read as drift, and `recover` would remove the service | 4.3, 4.4, 6, 14 |
+| 5 | SIGTERM and SIGHUP behave like SIGINT, and SIGINT is also handled during validation | Left unhandled, both leave the lock behind | 4.3, 4.5, 14 |
+| 5 | A rollback whose verification raises ends `ROLLBACK_FAILED`, exit 5, instead of exit 1 | Exit 5 is what pages someone | 4.5, 14, 16.4 |
+| 5 | Every run ends with an audit `finish` event, and overrides and `--dry-run` are audited | The audit log recorded no outcome, so `history` could not show one, and overrides left no trace | 5.5 |
+| 5 | `append` finishes a torn line, and `history` skips and counts unreadable lines | A torn line would have swallowed the next run's first event, not just itself | 5.5 |
+| 5 | Added `Outcome.VALID`, `DeploymentResult.actor`, `StateStore.find()`, `NullAudit` and a `validate()` function | `validate` had no outcome and must write nothing, the text header needs an actor, and blank state can't show that a record is missing | 4.3, 5.6, 6 |
+| 5 | `artifact_dir` moved from the controller's constructor to `deploy()` | `recover` has no `--artifact-dir` to pass | 8.3 |
+| 5 | `--state-dir` is on all but `validate`, and `--actor` is on `recover` only | An accepted option that does nothing is misleading. A deploy's actor is the manifest's `requested_by` | 6, 12.1 |
+| 5 | A failed audit write no longer loses the `recover` instruction, and any other unexpected error exits 1 | An audit write failure escaped as a plain `OSError` with the run still in flight | 4.5, 5.6 |
 
 ### 16.3 Open items
 
 **Every phase**
 
 - Add an entry to [ai-log.md](ai-log.md), including the time spent. `AI_PROCESS.md` and the time note depend on it.
-
-**Phase 5, required**
-
-- Make the `history` reader tolerate a partial last line in `audit.jsonl`, which a hard kill during an append can leave.
-- Add `make smoke` back to `make ci`.
-- Build `FixtureHealthProbe` before taking the lock and before reading state, for `deploy` and `recover`, and report `HealthProfileError` as exit 2.
-- Report `RecoveryRequired` and `StateCorruptError` as exit 1, printing the message to stderr. Neither has an `Outcome`.
-- Handle SIGINT during manifest validation. The controller only turns `KeyboardInterrupt` into `INTERRUPTED` once it holds the lock.
-
-**Phase 5, proposed and not yet agreed**
-
-- Validate `--service` and `--env` with the manifest rules, and report "no record" for an unknown environment. Today a typo looks like a blank `STABLE` environment, so `recover` would return `NO_OP` with exit 0.
-- Handle SIGTERM the same way as SIGINT. CI cancels jobs with SIGTERM, which skips `finally` and leaves the lock behind.
-- Define a JSON error shape for exit 1, which has no `Outcome`, so `--output json` has something to print.
-- Use random run IDs. Lock release relies on them being unique, and a counter can't work because rejected runs never read state.
 
 **Phase 7, required**
 
@@ -1194,26 +1215,12 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 
 Start here when picking the work back up. Open items in 16.3 are work to do, and this section is what needs a person to decide.
 
-**Waiting for review (made during Phase 4)**
+**Waiting for review (made during Phase 5)**
 
 Each of these is built and working. Tick one to accept it, or change it.
 
-- [ ] **Probe timeouts and "no data" mark a version known-bad.** A probe reached the version but got no usable answer, so this fails closed. The cost is that a monitoring outage during a deploy can block a healthy version until someone uses `--allow-known-bad`.
-- [ ] **A rollback that can't finish exits 1, not 5.** If the target can't be read while verifying a rollback, the run raises `RecoveryRequired` and exits 1, as 4.5 says. A rollback that fails verification or fails to apply exits 5. Automation therefore sees two different exits for "the rollback didn't complete".
-- [ ] **`in_flight.to_version` and `deployment_key` can be `null`.** The first means `recover` is removing what's running, and the second is for drift. See 5.3.
-- [ ] **Rejected runs audit the service and environment as declared, even if invalid.** `audit.jsonl` can therefore contain an environment such as `qa`.
-
-**Needed before Phase 5 starts**
-
-- [ ] Decide the four "Phase 5, proposed and not yet agreed" items in 16.3: validating `--service` and `--env`, handling SIGTERM, a JSON error shape for exit 1, and random run IDs.
-
-**Needed for production**
-
-The plan was written for a take-home with a simulated target, and this is now being prepared for production. Section 12.1 lists these as limitations to document, and nobody has decided yet whether they become required work:
-
-- [ ] Real `DeploymentTarget` and `HealthProbe` adapters. The rollout wait has only been tested with scripted targets.
-- [ ] A lock that works across hosts. The lockfile only works on one host, and a run can hold the global lock for up to `rollout_timeout_seconds` while it waits, which blocks every other deploy.
-- [ ] Durable state. The ledger and audit log are local files.
+- [ ] **`--state-dir` is not on `validate`.** `validate` writes nothing, so passing it is now a usage error rather than being ignored.
+- [ ] **With `$USER` unset, `recover` requires `--actor`.** It exits 2 rather than audit an unknown name, which can matter in containers and CI.
 
 **Deferred on purpose (2026-10-31)**
 
@@ -1232,3 +1239,16 @@ These were discussed and left as they are, so that they don't disturb the next p
 | 2026-10-31 | Wait for the rollout before verifying, using `rollout_timeout_seconds` | 4.5, 5.2, 14 |
 | 2026-10-31 | `verify()` refuses NaN, infinite and negative metrics | 5.2 |
 | 2026-10-31 | The four proposed Phase 4 items: clean known-bad list, separate `recover` path, mark only measured failures, show the probe count on a pass | 4.4, 4.5, 6, 14 |
+| 2026-10-31 | Accepted as built: probe timeouts and "no data" mark a version known-bad | 4.5 |
+| 2026-10-31 | Accepted as built: `in_flight.to_version` and `deployment_key` can be `null` | 5.3 |
+| 2026-10-31 | Accepted as built: rejected runs audit the service and environment as declared | 5.5 |
+| 2026-10-31 | A rollback whose verification raises ends `ROLLBACK_FAILED`, exit 5. This replaces the exit 1 built in Phase 4, because exit 1 would not page anyone. `RecoveryRequired` remains for a ledger or audit that can't be written | 4.5, 14 |
+| 2026-10-31 | Validate `--service` and `--env`, and refuse `recover` when there is no ledger record, which could otherwise remove a running service | 4.4, 6, 14 |
+| 2026-10-31 | SIGTERM and SIGHUP behave like SIGINT | 4.3, 4.5, 14 |
+| 2026-10-31 | Errors with no `Outcome` print `{"error", "exit_code"}` with `--output json`. Chosen over a shape with `run_id`, so the failure is matched to its audit events by time | 5.6 |
+| 2026-10-31 | Run IDs are `r-<UTC timestamp>-<6 hex>`, chosen over random hex alone so they sort by time | 5.5 |
+| 2026-10-31 | Every run ends with an audit `finish` event, and overrides and `--dry-run` are audited | 5.5 |
+| 2026-10-31 | `status` exits 0 whenever it can report; `history --limit` counts runs; `validate` has the outcome `VALID` and writes nothing | 6 |
+| 2026-10-31 | Real adapters, a lock that works across hosts and durable state stay documented limitations for now. deployctl runs on one host, against the simulated target. The user may take them up after a working demo | 12.1 |
+| 2026-10-31 | Accepted for now: a lost `state.json` has to be restored by hand, because `recover` refuses an environment with no record. To revisit with the items above | 12.1 |
+| 2026-10-31 | `--actor` is on `recover` only, and a deploy's audit shows the manifest's self-declared `requested_by`. Recording who actually ran a deploy will not be implemented | 6, 12.1 |

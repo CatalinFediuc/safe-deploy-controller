@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from conftest import FakeClock, make_manifest
-from deployctl.audit import AuditLog, Recorder
+from deployctl.audit import AuditLog, NullAudit, Recorder
 from deployctl.errors import InvariantError
 from deployctl.models import (
     EnvironmentState,
@@ -157,6 +157,7 @@ def test_step_failing_to_reach_the_audit_log_is_not_reported(
     monkeypatch.setattr(audit_log, "append", fail)
     with pytest.raises(OSError, match="disk full"):
         recorder.step(Stage.VALIDATE, StepResult.PASS, "ok")
+    monkeypatch.undo()
     assert recorder.finish(Outcome.REJECTED).steps == []
 
 
@@ -253,9 +254,40 @@ def test_finish_reports_the_run_and_its_final_state(
     assert (result.from_version, result.to_version) == ("1.4.2", "1.5.0")
     assert result.final_state == FinalState(EnvStatus.STABLE, "1.4.2")
     assert result.next_action == "investigate"
+    assert result.actor == "catalin"
     assert [(s.seq, s.ts) for s in result.steps] == [
-        (event["seq"], event["ts"]) for event in events(audit_log)
+        (event["seq"], event["ts"]) for event in events(audit_log)[:-1]
     ]
+
+
+def test_finish_closes_the_run_in_the_audit_log(recorder: Recorder, audit_log: AuditLog) -> None:
+    recorder.bind(make_manifest())
+    recorder.step(Stage.VERIFY, StepResult.FAIL, "unhealthy")
+
+    result = recorder.finish(
+        Outcome.ROLLED_BACK, RollbackStatus.SUCCEEDED, next_action="investigate"
+    )
+
+    closing = events(audit_log)[-1]
+    assert closing["seq"] == 2
+    assert closing["stage"] == "finish"
+    assert closing["result"] == "FAIL"
+    assert closing["message"] == "investigate"
+    assert closing["outcome"] == "ROLLED_BACK"
+    assert closing["rollback_status"] == "SUCCEEDED"
+    assert closing["exit_code"] == 4
+    assert closing["run_id"] == result.run_id
+    assert closing["service"] == "orders-api"
+    assert [step.stage for step in result.steps] == [Stage.VERIFY]
+
+
+def test_finish_with_no_next_action_names_the_outcome(
+    recorder: Recorder, audit_log: AuditLog
+) -> None:
+    recorder.finish(Outcome.SUCCEEDED)
+
+    closing = events(audit_log)[-1]
+    assert (closing["result"], closing["message"]) == ("PASS", "SUCCEEDED")
 
 
 def test_finished_result_does_not_change_with_later_steps(recorder: Recorder) -> None:
@@ -263,3 +295,99 @@ def test_finished_result_does_not_change_with_later_steps(recorder: Recorder) ->
     result = recorder.finish(Outcome.NO_OP)
     recorder.step(Stage.PREFLIGHT, StepResult.PASS, "ok")
     assert len(result.steps) == 1
+
+
+def test_null_audit_writes_nothing(clock: FakeClock, state_dir: Path) -> None:
+    Recorder(NullAudit(), clock, run_id="r-0007").finish(Outcome.VALID)
+    assert not state_dir.exists()
+
+
+def test_append_after_a_torn_line_keeps_the_new_event_readable(audit_log: AuditLog) -> None:
+    audit_log.append({"run_id": "r-1"})
+    with audit_log.path.open("a", encoding="utf-8") as stream:
+        stream.write('{"run_id": "r-1", "mess')
+
+    audit_log.append({"run_id": "r-2"})
+
+    lines = audit_log.path.read_text(encoding="utf-8").splitlines()
+    assert lines == ['{"run_id": "r-1"}', '{"run_id": "r-1", "mess', '{"run_id": "r-2"}']
+
+
+def _event(run_id: str, ts: str, environment: str = "staging", **extra: Any) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "ts": ts,
+        "service": "orders-api",
+        "environment": environment,
+        "from_version": None,
+        "to_version": "1.5.0",
+        "change_id": "CHG-1042",
+        "actor": "catalin",
+        **extra,
+    }
+
+
+def test_history_groups_events_by_run_newest_first(audit_log: AuditLog) -> None:
+    audit_log.append(_event("r-1", "t1"))
+    audit_log.append(_event("r-1", "t2", outcome="SUCCEEDED", rollback_status="X", exit_code=0))
+    audit_log.append(_event("r-2", "t3", to_version="1.6.0"))
+
+    history = audit_log.history("orders-api", "staging", limit=10)
+
+    assert [run["run_id"] for run in history.runs] == ["r-2", "r-1"]
+    newest, oldest = history.runs
+    assert (newest["started_at"], newest["outcome"], newest["exit_code"]) == ("t3", None, None)
+    assert newest["to_version"] == "1.6.0"
+    assert (oldest["started_at"], oldest["outcome"], oldest["exit_code"]) == ("t1", "SUCCEEDED", 0)
+    assert oldest["rollback_status"] == "X"
+    assert len(oldest["events"]) == 2
+    assert history.skipped_lines == 0
+
+
+def test_history_limit_counts_runs_not_events(audit_log: AuditLog) -> None:
+    for run_id in ("r-1", "r-2", "r-3"):
+        audit_log.append(_event(run_id, "t1"))
+        audit_log.append(_event(run_id, "t2"))
+
+    history = audit_log.history("orders-api", "staging", limit=2)
+
+    assert [run["run_id"] for run in history.runs] == ["r-3", "r-2"]
+    assert all(len(run["events"]) == 2 for run in history.runs)
+
+
+def test_history_only_lists_the_asked_environment(audit_log: AuditLog) -> None:
+    audit_log.append(_event("r-1", "t1"))
+    audit_log.append(_event("r-2", "t2", environment="prod"))
+
+    assert [r["run_id"] for r in audit_log.history("orders-api", "prod", 10).runs] == ["r-2"]
+    assert audit_log.history("other-api", "prod", 10).runs == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['{"run_id": "r-1", "mess', "17", '{"seq": 1}', '{"run_id": 7}', "not json"],
+    ids=["torn", "fragment", "no-run-id", "bad-run-id", "garbage"],
+)
+def test_history_counts_lines_it_cannot_read(audit_log: AuditLog, line: str) -> None:
+    audit_log.append(_event("r-1", "t1"))
+    with audit_log.path.open("a", encoding="utf-8") as stream:
+        stream.write(line + "\n")
+    audit_log.append(_event("r-2", "t2"))
+
+    history = audit_log.history("orders-api", "staging", 10)
+
+    assert [run["run_id"] for run in history.runs] == ["r-2", "r-1"]
+    assert history.skipped_lines == 1
+
+
+def test_history_survives_bytes_that_are_not_text(audit_log: AuditLog) -> None:
+    audit_log.append(_event("r-1", "t1"))
+    with audit_log.path.open("ab") as stream:
+        stream.write(b"\xff\xfe\n")
+
+    assert audit_log.history("orders-api", "staging", 10).skipped_lines == 1
+
+
+def test_history_with_no_audit_file_is_empty(audit_log: AuditLog) -> None:
+    history = audit_log.history("orders-api", "staging", 10)
+    assert (history.runs, history.skipped_lines) == ([], 0)

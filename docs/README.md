@@ -60,7 +60,7 @@ Nothing calls these modules yet. The controller arrives in Phase 4.
 
 The plan left these gaps, so we closed them:
 
-- **Two extra transitions:** the state diagram had no path for two things `recover` must do. `STABLE -> ROLLING_BACK` covers drift (T13), and `ROLLING_BACK -> ROLLING_BACK` covers a crash during rollback (T11). The diagram in the plan has not been updated.
+- **Two extra transitions:** the state diagram had no path for two things `recover` must do. `STABLE -> ROLLING_BACK` covers drift (T13), and `ROLLING_BACK -> ROLLING_BACK` covers a crash during rollback (T11).
 - **`Recorder.bind_from_version()`:** the skeleton's `in_flight()` and the result both need `from_version`, but the manifest can't say what is running. The controller sets it once state is read.
 
 These go further than the plan asked:
@@ -126,4 +126,4 @@ The new fields exist, but nothing uses them yet. Phase 4 needs to:
 - keep `in_flight` when an environment moves to `NEEDS_ATTENTION`, so `recover` still has the thresholds
 - have `recover` use `in_flight.health_check`, and fall back to the defaults for drift, which has no in-flight record
 
-`IMPLEMENTATION_PLAN.md` has not been updated, so its sections 4.4, 5.3 and 8.1 no longer match the code.
+[Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.

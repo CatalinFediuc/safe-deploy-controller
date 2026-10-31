@@ -2,7 +2,7 @@
 
 > Working name: **`deployctl`**, repo **`safe-deploy-controller`**, Python **3.11+**, **stdlib-only runtime**.
 > Source: *EOC SRE Engineer Take-Home Exercises v1.0*, Option 4.
-> Status, changes since the original plan and open items: section 16.
+> Status, changes since the original plan, open items and decisions waiting for review: section 16.
 
 ---
 
@@ -1189,3 +1189,46 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 - Pin `hatchling`, which `make build` currently resolves to the latest version.
 - Keep the version number in one place, or add a test that `pyproject.toml` and `__init__.py` agree.
 - Bump the CI actions for the Node 20 deprecation and pin them to commit SHAs.
+
+### 16.4 Decisions
+
+Start here when picking the work back up. Open items in 16.3 are work to do, and this section is what needs a person to decide.
+
+**Waiting for review (made during Phase 4)**
+
+Each of these is built and working. Tick one to accept it, or change it.
+
+- [ ] **Probe timeouts and "no data" mark a version known-bad.** A probe reached the version but got no usable answer, so this fails closed. The cost is that a monitoring outage during a deploy can block a healthy version until someone uses `--allow-known-bad`.
+- [ ] **A rollback that can't finish exits 1, not 5.** If the target can't be read while verifying a rollback, the run raises `RecoveryRequired` and exits 1, as 4.5 says. A rollback that fails verification or fails to apply exits 5. Automation therefore sees two different exits for "the rollback didn't complete".
+- [ ] **`in_flight.to_version` and `deployment_key` can be `null`.** The first means `recover` is removing what's running, and the second is for drift. See 5.3.
+- [ ] **Rejected runs audit the service and environment as declared, even if invalid.** `audit.jsonl` can therefore contain an environment such as `qa`.
+
+**Needed before Phase 5 starts**
+
+- [ ] Decide the four "Phase 5, proposed and not yet agreed" items in 16.3: validating `--service` and `--env`, handling SIGTERM, a JSON error shape for exit 1, and random run IDs.
+
+**Needed for production**
+
+The plan was written for a take-home with a simulated target, and this is now being prepared for production. Section 12.1 lists these as limitations to document, and nobody has decided yet whether they become required work:
+
+- [ ] Real `DeploymentTarget` and `HealthProbe` adapters. The rollout wait has only been tested with scripted targets.
+- [ ] A lock that works across hosts. The lockfile only works on one host, and a run can hold the global lock for up to `rollout_timeout_seconds` while it waits, which blocks every other deploy.
+- [ ] Durable state. The ledger and audit log are local files.
+
+**Deferred on purpose (2026-10-31)**
+
+These were discussed and left as they are, so that they don't disturb the next phases. Reopen them if the reason changes.
+
+- An audited `recover --reset-target` for a corrupt `environment.json`. Today the repair is by hand and isn't audited (12.1, 14).
+- Writing a refused deploy with a bad health profile to `audit.jsonl`. Today it exits 2 with no audit record (14).
+- A separate "inconclusive" verification result. Today a service with no traffic can produce NaN, fail verification and be marked known-bad (12.1).
+
+**Decided**
+
+| Date | Decision | Where |
+|---|---|---|
+| 2026-10-31 | Refuse a corrupt `environment.json`, with a documented manual repair | 12.1, 14 |
+| 2026-10-31 | Check the whole health profile on load, keys included; a bad one exits 2 | 4.3, 5.2, 14 |
+| 2026-10-31 | Wait for the rollout before verifying, using `rollout_timeout_seconds` | 4.5, 5.2, 14 |
+| 2026-10-31 | `verify()` refuses NaN, infinite and negative metrics | 5.2 |
+| 2026-10-31 | The four proposed Phase 4 items: clean known-bad list, separate `recover` path, mark only measured failures, show the probe count on a pass | 4.4, 4.5, 6, 14 |

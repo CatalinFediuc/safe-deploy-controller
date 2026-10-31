@@ -226,7 +226,11 @@ def _health_check(data: dict[str, Any], errors: list[str]) -> HealthCheckSpec:
     if not isinstance(section, dict):
         errors.append("health_check: must be an object")
         return HealthCheckSpec()
+    return parse_health_check(section, errors)
 
+
+def parse_health_check(section: dict[str, Any], errors: list[str]) -> HealthCheckSpec:
+    """Apply the threshold rules, for manifests and for thresholds read back from the ledger."""
     defaults = asdict(HealthCheckSpec())
     # A misspelled threshold must not silently fall back to its default.
     _reject_unknown(section, defaults, "health_check", errors)

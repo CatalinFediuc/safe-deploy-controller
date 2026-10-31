@@ -1,11 +1,12 @@
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from conftest import FakeClock
+from conftest import FakeClock, make_manifest
 from deployctl.audit import AuditLog, Recorder
 from deployctl.errors import InvariantError
 from deployctl.models import (
@@ -13,7 +14,7 @@ from deployctl.models import (
     EnvStatus,
     ExitCode,
     FinalState,
-    Manifest,
+    HealthCheckSpec,
     Outcome,
     RollbackStatus,
     Stage,
@@ -35,18 +36,6 @@ EVENT_KEYS = [
     "actor",
     "message",
 ]
-
-
-def make_manifest() -> Manifest:
-    return Manifest(
-        service="orders-api",
-        environment="staging",
-        version="1.5.0",
-        artifact_path=Path("orders-api-1.5.0.bin"),
-        artifact_sha256="a" * 64,
-        change_id="CHG-1042",
-        requested_by="catalin",
-    )
 
 
 def events(audit_log: AuditLog) -> list[dict[str, Any]]:
@@ -103,9 +92,11 @@ def test_steps_are_numbered_in_order(
     ]
 
 
-def test_each_run_numbers_its_own_steps(audit_log: AuditLog, clock: FakeClock) -> None:
-    for run_id in ("r-0001", "r-0002"):
-        Recorder(audit_log, clock, run_id).step(Stage.VALIDATE, StepResult.PASS, "ok")
+def test_each_run_numbers_its_own_steps(
+    audit_log: AuditLog, clock: FakeClock, run_ids: Callable[[], str]
+) -> None:
+    for _ in range(2):
+        Recorder(audit_log, clock, run_ids()).step(Stage.VALIDATE, StepResult.PASS, "ok")
     assert [(event["run_id"], event["seq"]) for event in events(audit_log)] == [
         ("r-0001", 1),
         ("r-0002", 1),
@@ -170,7 +161,7 @@ def test_step_failing_to_reach_the_audit_log_is_not_reported(
 
 
 def test_in_flight_carries_the_run_identity(recorder: Recorder, clock: FakeClock) -> None:
-    manifest = make_manifest()
+    manifest = make_manifest(health_check=HealthCheckSpec(attempts=7, required_consecutive=2))
     recorder.bind(manifest)
     recorder.bind_from_version("1.4.2")
     clock.advance(5)
@@ -182,6 +173,7 @@ def test_in_flight_carries_the_run_identity(recorder: Recorder, clock: FakeClock
     assert (in_flight.from_version, in_flight.to_version) == ("1.4.2", "1.5.0")
     assert in_flight.stage is Stage.DEPLOY
     assert in_flight.started_at == "2026-11-01T10:15:06.000Z"
+    assert in_flight.health_check == manifest.health_check
 
 
 def test_in_flight_of_a_first_deploy_has_no_from_version(recorder: Recorder) -> None:

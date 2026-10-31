@@ -8,7 +8,9 @@ from typing import Any
 
 from deployctl.clock import Clock, format_timestamp
 from deployctl.errors import InvariantError, LockHeld, StateCorruptError
-from deployctl.models import EnvironmentState, EnvStatus, InFlight, Stage
+from deployctl.fileio import write_atomic
+from deployctl.manifest import parse_health_check
+from deployctl.models import EnvironmentState, EnvStatus, HealthCheckSpec, InFlight, Stage
 
 SCHEMA_VERSION = 1
 MAX_KNOWN_GOOD_HISTORY = 10
@@ -51,6 +53,7 @@ def _is_member_of(enum: type[StrEnum]) -> Callable[[object], bool]:
 _ENTRY_RULES: dict[str, Callable[[object], bool]] = {
     "status": _is_member_of(EnvStatus),
     "active_version": _is_optional_str,
+    "active_artifact_sha256": _is_optional_str,
     "last_known_good": _is_optional_str,
     "known_good_history": _is_str_list,
     "failed_versions": _is_str_list,
@@ -65,6 +68,7 @@ _IN_FLIGHT_RULES: dict[str, Callable[[object], bool]] = {
     "to_version": _is_str,
     "stage": _is_member_of(Stage),
     "started_at": _is_str,
+    "health_check": lambda value: isinstance(value, dict),
 }
 
 
@@ -82,15 +86,33 @@ def _check_shape(
     return value
 
 
+def _decode_health_check(section: dict[str, Any], label: str) -> HealthCheckSpec:
+    # Unlike a manifest, the ledger always writes every key, so a missing one is not a default.
+    missing = sorted(set(asdict(HealthCheckSpec())) - set(section))
+    errors = [f"health_check.{key}: required" for key in missing]
+    spec = parse_health_check(section, errors)
+    if errors:
+        raise ValueError(f"{label}: {'; '.join(errors)}")
+    return spec
+
+
+def _decode_in_flight(value: object, label: str) -> InFlight:
+    raw = _check_shape(value, _IN_FLIGHT_RULES, label)
+    decoded = {
+        "stage": Stage(raw["stage"]),
+        "health_check": _decode_health_check(raw["health_check"], label),
+    }
+    return InFlight(**(raw | decoded))
+
+
 def _decode_entry(env_key: str, value: object) -> EnvironmentState:
     service, _, environment = env_key.partition("/")
     if not service or not environment:
         raise ValueError(f"{env_key!r} is not a service/environment key")
     entry = _check_shape(value, _ENTRY_RULES, env_key)
-    in_flight = None
-    if entry["in_flight"] is not None:
-        raw = _check_shape(entry["in_flight"], _IN_FLIGHT_RULES, f"{env_key}.in_flight")
-        in_flight = InFlight(**(raw | {"stage": Stage(raw["stage"])}))
+    in_flight = entry["in_flight"]
+    if in_flight is not None:
+        in_flight = _decode_in_flight(in_flight, f"{env_key}.in_flight")
     return EnvironmentState(
         service=service,
         environment=environment,
@@ -124,26 +146,6 @@ def _encode(environments: dict[str, EnvironmentState]) -> str:
         "environments": {key: _encode_entry(state) for key, state in environments.items()},
     }
     return json.dumps(document, indent=2) + "\n"
-
-
-def _write_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp")
-    try:
-        with tmp.open("w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        tmp.replace(path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    # The rename is only durable once the directory is: write-ahead intent must survive power loss.
-    directory = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
 
 
 @dataclass(frozen=True)
@@ -216,7 +218,7 @@ class StateStore:
         # Reading first also means a corrupt file raises here instead of being overwritten.
         environments = self._read()
         environments[state.env_key] = state
-        _write_atomic(self.path, _encode(environments))
+        write_atomic(self.path, _encode(environments))
 
     def lock(self, owner: str) -> FileLock:
         return FileLock.acquire(self.lock_path, owner, format_timestamp(self._clock.now()))

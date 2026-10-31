@@ -9,6 +9,7 @@ from deployctl.models import (
     DeploymentResult,
     EnvironmentState,
     FinalState,
+    HealthCheckSpec,
     InFlight,
     Manifest,
     Outcome,
@@ -43,6 +44,7 @@ class _RunIdentity:
     to_version: str | None = None
     change_id: str | None = None
     actor: str | None = None
+    health_check: HealthCheckSpec | None = None
 
 
 class Recorder:
@@ -63,6 +65,7 @@ class Recorder:
             to_version=manifest.version,
             change_id=manifest.change_id,
             actor=manifest.requested_by,
+            health_check=manifest.health_check,
         )
 
     def bind_from_version(self, version: str | None) -> None:
@@ -82,7 +85,11 @@ class Recorder:
 
     def in_flight(self, stage: Stage) -> InFlight:
         identity = self._identity
-        if identity.deployment_key is None or identity.to_version is None:
+        if (
+            identity.deployment_key is None
+            or identity.to_version is None
+            or identity.health_check is None
+        ):
             raise InvariantError("in-flight record requested before the manifest was bound")
         return InFlight(
             run_id=self.run_id,
@@ -91,6 +98,7 @@ class Recorder:
             to_version=identity.to_version,
             stage=stage,
             started_at=format_timestamp(self._clock.now()),
+            health_check=identity.health_check,
         )
 
     def finish(

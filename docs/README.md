@@ -85,3 +85,45 @@ These go further than the plan asked:
 - `Recorder.bind()` only accepts a full `Manifest`. Rejected runs and `recover` both need to bind partial identity in Phase 4.
 - A hard kill during an append can leave a partial last line in `audit.jsonl`. The `history` reader in Phase 5 should tolerate this.
 - `seq` restarts for each run, as in the plan's examples, so `history` must group events by `run_id`.
+
+## Pre-Phase 3 adjustments
+
+Delivered in [PR #3](https://github.com/CatalinFediuc/safe-deploy-controller/pull/3).
+
+A review of Phases 0 to 2 found these were much cheaper to change before Phase 3 than after it. The plan did not ask for them.
+
+### What we changed
+
+- **`active_artifact_sha256` in the ledger:** the ledger only stored the version, so a rebuilt artifact with the same version number would have been a `NO_OP` under section 4.4 of the plan, with nothing deployed.
+- **`health_check` in `InFlight`:** `recover` has no manifest, so it had no thresholds to verify a rollback against. Using the defaults could verify a rollback against looser limits than the deploy that failed.
+- **`parse_health_check()` in `manifest.py`:** stored thresholds now pass the same rules as manifest thresholds. A hand-edited `state.json` with a threshold out of range or missing counts as corrupt, so it can't loosen a rollback.
+- **`fileio.py`:** `write_atomic()` moved out of `state.py`, so Phase 3's `SimulatedTarget` can write `environment.json` without importing the ledger.
+- **Test setup:**
+  - `make_manifest()` and a deterministic `run_ids` fixture now live in `tests/conftest.py`.
+  - `test_cli.py` moved to `tests/cli/`, matching the plan's layout.
+  - mypy now also covers `tests` and `scripts`, so a fake that drifts from its protocol fails the build.
+
+`schema_version` stays at `1`. The `state.json` format changed, but no real state files exist yet.
+
+### Problems along the way
+
+**Weak test:** two of the injected bugs below survived at first. `test_in_flight_carries_the_run_identity` used a default manifest, so a `Recorder` that dropped the manifest's thresholds still compared equal to it. The test now uses non-default thresholds.
+
+### How it was verified
+
+- `make ci` passed locally on Python 3.12, with 265 tests and 100% branch coverage.
+- The test suite also passed locally on Python 3.11.
+- GitHub CI passed on Python 3.11, 3.12 and 3.13.
+- We put 10 deliberate bugs into a throwaway copy. The tests caught all 10 after the fix above.
+- We renamed `FakeClock.sleep` in a throwaway copy, and mypy rejected it as no longer matching `Clock`.
+
+### Left for later phases
+
+The new fields exist, but nothing uses them yet. Phase 4 needs to:
+
+- return `BLOCKED` from preflight when the requested version is active with a different sha
+- set `active_artifact_sha256` on success and clear it when a first-ever deploy is removed
+- keep `in_flight` when an environment moves to `NEEDS_ATTENTION`, so `recover` still has the thresholds
+- have `recover` use `in_flight.health_check`, and fall back to the defaults for drift, which has no in-flight record
+
+`IMPLEMENTATION_PLAN.md` has not been updated, so its sections 4.4, 5.3 and 8.1 no longer match the code.

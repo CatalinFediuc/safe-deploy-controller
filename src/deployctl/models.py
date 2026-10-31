@@ -112,6 +112,7 @@ class InFlight:
     to_version: str
     stage: Stage
     started_at: str
+    health_check: HealthCheckSpec  # `recover` has no manifest to take its thresholds from
 
 
 @dataclass
@@ -120,6 +121,7 @@ class EnvironmentState:
     environment: str
     status: EnvStatus = EnvStatus.STABLE
     active_version: str | None = None
+    active_artifact_sha256: str | None = None  # a version number alone can hide a rebuild
     last_known_good: str | None = None
     known_good_history: list[str] = field(default_factory=list)
     failed_versions: list[str] = field(default_factory=list)

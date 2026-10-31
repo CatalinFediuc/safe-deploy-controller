@@ -19,6 +19,7 @@ HEALTH_CHECK = {
     "timeout_seconds": 2,
     "max_error_rate": 0.01,
     "max_p99_latency_ms": 500,
+    "rollout_timeout_seconds": 30,
 }
 
 

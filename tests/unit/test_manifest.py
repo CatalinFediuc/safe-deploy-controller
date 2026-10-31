@@ -34,6 +34,7 @@ def valid_document() -> dict[str, Any]:
             "timeout_seconds": 2,
             "max_error_rate": 0.01,
             "max_p99_latency_ms": 500,
+            "rollout_timeout_seconds": 30,
         },
     }
 
@@ -110,6 +111,7 @@ def test_valid_manifest_loads(load: Load, artifact_dir: Path) -> None:
         timeout_seconds=2.0,
         max_error_rate=0.01,
         max_p99_latency_ms=500.0,
+        rollout_timeout_seconds=30.0,
     )
 
 
@@ -117,6 +119,7 @@ def test_integer_thresholds_become_floats(load: Load) -> None:
     spec = load(valid_document()).health_check
     assert isinstance(spec.timeout_seconds, float)
     assert isinstance(spec.max_p99_latency_ms, float)
+    assert isinstance(spec.rollout_timeout_seconds, float)
 
 
 def test_health_check_is_optional(load: Load) -> None:
@@ -384,6 +387,8 @@ def test_artifact_read_failure_is_rejected(
         ("max_error_rate", 0),
         ("max_error_rate", 1),
         ("max_p99_latency_ms", 0.001),
+        ("rollout_timeout_seconds", 0),
+        ("rollout_timeout_seconds", 3600),
     ],
 )
 def test_health_bounds_are_inclusive(load: Load, field: str, value: float) -> None:
@@ -422,6 +427,9 @@ def test_health_bounds_are_inclusive(load: Load, field: str, value: float) -> No
         ("max_p99_latency_ms", float("nan")),
         ("max_p99_latency_ms", float("inf")),
         ("max_p99_latency_ms", 10**400),
+        ("rollout_timeout_seconds", -1),
+        ("rollout_timeout_seconds", 3600.1),
+        ("rollout_timeout_seconds", True),
     ],
 )
 def test_health_bounds_reject(load: Load, field: str, value: object) -> None:

@@ -10,7 +10,11 @@ _ENTRY_KEYS = frozenset({"running_version", "updated_at"})
 
 
 class DeploymentTarget(Protocol):
-    """Real implementations: Kubernetes/Argo CD/ECS. Simulated: environment.json."""
+    """Real implementations: Kubernetes/Argo CD/ECS. Simulated: environment.json.
+
+    `apply` may return before a rollout finishes, but `running_version` must only report the new
+    version once it has: `verify` starts probing as soon as it does.
+    """
 
     def running_version(self, env_key: str) -> str | None: ...
     def apply(self, env_key: str, version: str) -> None: ...

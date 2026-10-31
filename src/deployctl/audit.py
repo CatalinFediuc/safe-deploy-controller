@@ -68,9 +68,28 @@ class Recorder:
             health_check=manifest.health_check,
         )
 
+    def bind_environment(
+        self, service: str | None, environment: str | None, actor: str | None = None
+    ) -> None:
+        """Partial identity, for rejected runs and `recover`, which have no valid manifest."""
+        self._identity = _RunIdentity(service=service, environment=environment, actor=actor)
+
     def bind_from_version(self, version: str | None) -> None:
         """Set once state is read: the manifest cannot say what is running today."""
         self._identity.from_version = version
+
+    def bind_recovery(
+        self,
+        deployment_key: str | None,
+        from_version: str | None,
+        to_version: str | None,
+        health_check: HealthCheckSpec,
+    ) -> None:
+        """Set once state is read: `recover` learns all of this from the ledger and the target."""
+        self._identity.deployment_key = deployment_key
+        self._identity.from_version = from_version
+        self._identity.to_version = to_version
+        self._identity.health_check = health_check
 
     def step(self, stage: Stage, result: StepResult, message: str) -> None:
         record = StepRecord(
@@ -85,12 +104,8 @@ class Recorder:
 
     def in_flight(self, stage: Stage) -> InFlight:
         identity = self._identity
-        if (
-            identity.deployment_key is None
-            or identity.to_version is None
-            or identity.health_check is None
-        ):
-            raise InvariantError("in-flight record requested before the manifest was bound")
+        if identity.health_check is None:
+            raise InvariantError("in-flight record requested before the run was bound")
         return InFlight(
             run_id=self.run_id,
             deployment_key=identity.deployment_key,

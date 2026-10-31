@@ -181,6 +181,36 @@ def test_in_flight_of_a_first_deploy_has_no_from_version(recorder: Recorder) -> 
     assert recorder.in_flight(Stage.DEPLOY).from_version is None
 
 
+def test_partial_identity_is_audited_and_reported(recorder: Recorder, audit_log: AuditLog) -> None:
+    recorder.bind_environment("orders-api", "qa")
+    recorder.step(Stage.VALIDATE, StepResult.FAIL, "bad manifest")
+    event = events(audit_log)[0]
+    assert (event["service"], event["environment"]) == ("orders-api", "qa")
+    assert (event["actor"], event["to_version"]) == (None, None)
+    result = recorder.finish(Outcome.REJECTED)
+    assert (result.service, result.environment) == ("orders-api", "qa")
+
+
+def test_recovery_identity_comes_from_the_ledger(recorder: Recorder, audit_log: AuditLog) -> None:
+    spec = HealthCheckSpec(attempts=7, required_consecutive=2)
+    recorder.bind_environment("orders-api", "staging", "oncall")
+    recorder.bind_recovery("3f9a1c2b7e10", "1.5.0", "1.4.2", spec)
+    recorder.step(Stage.RECOVER, StepResult.PASS, "restoring")
+
+    event = events(audit_log)[0]
+    assert event["actor"] == "oncall"
+    assert event["deployment_key"] == "3f9a1c2b7e10"
+    assert (event["from_version"], event["to_version"]) == ("1.5.0", "1.4.2")
+    assert recorder.in_flight(Stage.ROLLBACK).health_check == spec
+
+
+def test_recovery_with_nothing_to_restore_has_no_target_version(recorder: Recorder) -> None:
+    recorder.bind_environment("orders-api", "staging", "oncall")
+    recorder.bind_recovery(None, "9.9.9", None, HealthCheckSpec())
+    in_flight = recorder.in_flight(Stage.ROLLBACK)
+    assert (in_flight.deployment_key, in_flight.to_version) == (None, None)
+
+
 def test_in_flight_before_bind_is_a_bug(recorder: Recorder) -> None:
     with pytest.raises(InvariantError):
         recorder.in_flight(Stage.DEPLOY)

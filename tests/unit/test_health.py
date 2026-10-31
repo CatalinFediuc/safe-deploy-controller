@@ -71,7 +71,11 @@ def test_healthy_passes_after_the_required_streak_and_stops(clock: FakeClock) ->
     probe = ScriptedProbe(HEALTHY)
     verdict = run_verify(probe, clock)
     assert verdict == Verdict(
-        passed=True, probes=3, consecutive=3, summary="3/3 consecutive healthy"
+        passed=True,
+        probes=3,
+        consecutive=3,
+        summary="3/3 consecutive healthy after 3 probes",
+        health_measured=True,
     )
     assert probe.calls == [(ENV, VERSION, 1.5)] * 3
 
@@ -83,13 +87,15 @@ def test_unhealthy_fails_with_the_documented_summary(clock: FakeClock) -> None:
         probes=3,
         consecutive=0,
         summary="0/3 consecutive healthy after 3 probes (error_rate 0.120 > 0.020)",
+        health_measured=True,
     )
 
 
-def test_flaky_start_still_passes(clock: FakeClock) -> None:
+def test_flaky_start_still_passes_and_shows_the_extra_probes(clock: FakeClock) -> None:
     verdict = run_verify(ScriptedProbe(UNHEALTHY, HEALTHY), clock)
     assert verdict.passed
     assert verdict.probes == 4
+    assert verdict.summary == "3/3 consecutive healthy after 4 probes"
 
 
 def test_failure_resets_the_streak(clock: FakeClock) -> None:
@@ -215,6 +221,7 @@ def test_version_lost_after_the_rollout_fails_without_probing(
     assert not verdict.passed
     assert verdict.summary.endswith(f"(running version is {running}, expected {VERSION})")
     assert probe.calls == []
+    assert not verdict.health_measured
 
 
 def test_version_changing_mid_verification_resets_the_streak(clock: FakeClock) -> None:
@@ -224,6 +231,17 @@ def test_version_changing_mid_verification_resets_the_streak(clock: FakeClock) -
     assert not verdict.passed
     assert verdict.probes == 3
     assert len(probe.calls) == 2
+    assert verdict.health_measured
+
+
+@pytest.mark.parametrize("failure", [ProbeTimeout("slow"), ProbeError("broken")])
+def test_probe_failures_count_as_measured(clock: FakeClock, failure: ProbeError) -> None:
+    # Failing closed: a version that never answers is not given the benefit of the doubt.
+    assert run_verify(ScriptedProbe(failure), clock).health_measured
+
+
+def test_no_data_counts_as_measured(clock: FakeClock) -> None:
+    assert run_verify(ScriptedProbe(HealthSample(None, None)), clock).health_measured
 
 
 def test_slow_rollout_waits_without_using_up_attempts(clock: FakeClock) -> None:
@@ -252,6 +270,7 @@ def test_rollout_timeout_fails_without_probing(clock: FakeClock, running: str | 
             "0/3 consecutive healthy (rollout not finished after 5s: "
             f"running version is {running}, expected {VERSION})"
         ),
+        health_measured=False,
     )
     assert probe.calls == []
     assert clock.sleeps == [1.0] * 5

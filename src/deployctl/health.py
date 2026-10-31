@@ -37,6 +37,7 @@ class Verdict:
     probes: int
     consecutive: int
     summary: str  # e.g. "0/3 consecutive healthy after 3 probes (error_rate 0.120 > 0.010)"
+    health_measured: bool  # False: no probe reached this version, so it says nothing about it
 
 
 _Response = HealthSample | Literal["timeout", "error"]
@@ -128,16 +129,9 @@ def _problem(sample: HealthSample, spec: HealthCheckSpec) -> str | None:
     )
 
 
-def _attempt(
-    probe: HealthProbe,
-    target: DeploymentTarget,
-    env_key: str,
-    version: str,
-    spec: HealthCheckSpec,
+def _sample_problem(
+    probe: HealthProbe, env_key: str, version: str, spec: HealthCheckSpec
 ) -> str | None:
-    running = target.running_version(env_key)
-    if running != version:  # health of some other version says nothing about this one
-        return f"running version is {running}, expected {version}"
     try:
         sample = probe.sample(env_key, version, spec.timeout_seconds)
     except ProbeError as exc:
@@ -180,19 +174,26 @@ def verify(
     stalled = _await_rollout(target, clock, env_key, version, spec.rollout_timeout_seconds)
     if stalled is not None:
         summary = f"0/{required} consecutive healthy ({stalled})"
-        return Verdict(passed=False, probes=0, consecutive=0, summary=summary)
+        return Verdict(False, probes=0, consecutive=0, summary=summary, health_measured=False)
 
     probes = consecutive = 0
+    measured = False
     problem: str | None = None
     while consecutive < required and spec.attempts - probes >= required - consecutive:
         if probes:
             clock.sleep(spec.interval_seconds)
-        problem = _attempt(probe, target, env_key, version, spec)
+        running = target.running_version(env_key)
+        if running == version:
+            measured = True
+            problem = _sample_problem(probe, env_key, version, spec)
+        else:  # health of some other version says nothing about this one
+            problem = f"running version is {running}, expected {version}"
         probes += 1
         consecutive = consecutive + 1 if problem is None else 0
 
     passed = consecutive >= required
     summary = f"{consecutive}/{required} consecutive healthy"
+    summary += f" after {probes} probe{'' if probes == 1 else 's'}"
     if not passed:
-        summary += f" after {probes} probe{'' if probes == 1 else 's'} ({problem})"
-    return Verdict(passed=passed, probes=probes, consecutive=consecutive, summary=summary)
+        summary += f" ({problem})"
+    return Verdict(passed, probes, consecutive, summary, health_measured=measured)

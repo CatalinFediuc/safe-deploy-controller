@@ -24,7 +24,8 @@ All on 2026-10-31, local time (UTC+2). These windows come from commit and PR tim
 | AI log | 10:49 to 10:52 | 3m |
 | Phase 3 | 10:52 to 11:08 | 16m |
 | Phase 3 decision review | 11:08 to 11:37 | 29m |
-| **Total so far** | 07:19 to 11:37 | **4h 18m** |
+| Phase 4 | 11:37 to 11:56 | 19m |
+| **Total so far** | 07:19 to 11:56 | **4h 37m** |
 
 The 07:19 start is the repository directory's creation time. Git can't separate Phases 0 and 1.
 
@@ -83,6 +84,17 @@ The prompts for these phases were not logged. Add what you remember. The accepte
 - **Bad health profile:** while explaining this decision, Claude found its own claim was overstated: it had said a typo couldn't look like an unhealthy release, but keys weren't checked. Claude recommended adding key checks and using exit 2, which matches a missing `--health-profile`. The user agreed, and preferred keeping the exit code simple to the audited alternative of exit 3.
 - **Running-version mismatch:** Claude recommended keeping a mismatch as a failed attempt, partly because the simulation can't exhibit a slow rollout. The user rejected that and chose a separate rollout wait, because they are preparing to roll this out for production. Claude's recommendation had been judged for a take-home, not for real targets.
 - **Bad metric values:** while listing the pros and cons, Claude found that `verify()` didn't refuse negative values, so a real probe returning `-1` would have read as healthy. The user chose the small fix and declined Claude's suggestion to carry a separate "inconclusive" result into Phase 4.
+
+### Phase 4: controller
+
+- **Asked:** after reviewing the docs, implement Phase 4.
+- **Decided by the user:** all four items that the plan listed as proposed, asked in one question before any code was written.
+- **Claude decided, for review:**
+  - probe timeouts and "no data" still mark a version known-bad
+  - `in_flight.to_version` and `deployment_key` can be `null`
+  - a run that can't finish its rollback raises the new `RecoveryRequired`
+- **Caught by reading the draft:** a double save that could have left `STABLE` with a run in flight, and a lost `recover` instruction. Neither had failed a test.
+- **Verification:** the first test run gave 100% branch coverage, but Claude's own review still found weak tests, including one that checked nothing. Of 56 injected bugs, 3 survived at first, and each one showed a missing assertion.
 
 ## Useful for `AI_PROCESS.md`
 

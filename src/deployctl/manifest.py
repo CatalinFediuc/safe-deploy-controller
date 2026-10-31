@@ -54,7 +54,7 @@ def load_manifest(path: Path, artifact_dir: Path) -> Manifest:
     health_check = _health_check(data, errors)
 
     if artifact is None or errors:
-        raise ManifestError(errors)
+        raise ManifestError(errors, service or None, environment or None)
     artifact_path, artifact_sha256 = artifact
     return Manifest(
         service=service,

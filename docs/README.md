@@ -146,14 +146,15 @@ Nothing calls these modules yet. The controller arrives in Phase 4.
 The plan left these open, so we decided them:
 
 - **Corrupt `environment.json`:** it raises `StateCorruptError` and is never overwritten, the same as the ledger. `apply` rewrites the whole file, so writing over something it can't read would lose other environments.
-- **Bad health profile:** a new `HealthProfileError` is raised when the profile is loaded. Treating a bad entry as "no data" would turn a typo into a failed deploy and a rollback.
-- **Running-version mismatch:** it counts as a failed attempt and skips the probe, so verification can still recover if the target catches up.
+- **Bad health profile:** a new `HealthProfileError` is raised when the profile is loaded. Treating a bad entry as "no data" would turn a typo into a failed deploy and a rollback. A review after PR #6 found that keys weren't checked, so `1.6.O` got through, and service and version keys now follow the manifest rules. A valid but wrong key, such as `1.6.1` for `1.6.0`, still can't be detected.
+- **Slow rollouts:** `verify()` first waits for the expected version to be running, polling once a second for up to `health_check.rollout_timeout_seconds`, which uses no health attempts. The field defaults to 60 and sits with the other thresholds, so `recover` waits the same way. Timing out fails verification with no probes run. This came out of the decision review after PR #6, because real targets finish rollouts after `apply` returns.
+- **Running-version mismatch:** after the rollout, the version is still checked before every probe. A mismatch counts as a failed attempt and skips the probe.
 - **Nothing running:** `remove()` deletes the entry, and `running_version: null` counts as corrupt.
 
 These close ways a bad signal could have read as healthy:
 
-- Metrics are compared with `not value <= limit`, because `value > limit` is false for NaN.
-- `verify()` checks `problem is None`, because a `ProbeError` with no message would otherwise count as a healthy probe.
+- `verify()` only accepts metrics from 0 up to the limit. NaN, infinite and negative values count as unhealthy and are reported as, for example, `error_rate invalid (nan)`. This covers any probe, not just the fixture: the decision review after PR #6 found that a real probe returning `-1` would have read as healthy.
+- A `ProbeError` with no message is reported as `probe failed with no detail`. An empty message would otherwise have counted as a healthy probe.
 - Profiles refuse negative, non-finite and boolean metrics.
 
 ### Behavior to know about
@@ -169,10 +170,13 @@ These close ways a bad signal could have read as healthy:
 - GitHub CI passed on Python 3.11, 3.12 and 3.13.
 - We put 37 deliberate bugs into a throwaway copy, such as letting NaN pass or ignoring the running version. The tests caught all 37. One of them looped forever, so the harness counted that timeout as caught.
 - Before that run, we added a test that a failed write keeps the old version. Nothing was checking that `SimulatedTarget` writes atomically.
+- After the decision review, `make ci` passed locally on Python 3.12 with 374 tests and 100% branch coverage, and the test suite passed on Python 3.11.
+- We injected 27 more bugs into the key checks, the rollout wait and the metric checks, and the tests catch 26. One survived at first: a default of 0 would have turned the rollout wait off, so a test now covers the default. The last one changes nothing: replacing `problem is None` with `not problem` has no effect now that a problem is never empty.
 
 ### Left for later phases
 
 - `verify()` doesn't catch errors from reading the target. Phase 4 must route them through the unexpected-exception path.
-- Phase 5 must build `FixtureHealthProbe` before taking the lock, and give `HealthProfileError` an exit code.
+- Phase 5 must build `FixtureHealthProbe` before taking the lock and report `HealthProfileError` as exit 2, the same as a missing `--health-profile`. The refused attempt won't appear in `audit.jsonl`.
+- Refusing a corrupt `environment.json` was reviewed and kept. `recover` can't fix that file, so Phase 4 must test the manual repair and Phase 7 must document it in the README. Section 12.1 of the plan has the steps.
 
 [Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.

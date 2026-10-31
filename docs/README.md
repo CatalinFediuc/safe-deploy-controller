@@ -180,3 +180,52 @@ These close ways a bad signal could have read as healthy:
 - Refusing a corrupt `environment.json` was reviewed and kept. `recover` can't fix that file, so Phase 4 must test the manual repair and Phase 7 must document it in the README. Section 12.1 of the plan has the steps.
 
 [Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.
+
+## Phase 4: controller
+
+Delivered on branch `feat/phase-4-controller`.
+
+### What we built
+
+- `controller.py`: `DeploymentController`, with `deploy()` and `recover()`. It runs validate, preflight, deploy, verify and complete, rolls back automatically, and owns every status change.
+- `tests/scenarios/`: T1 to T14, T17, T18, T20 and T21 from section 11 of the plan, plus the full `make demo` sequence against the real example files.
+- `tests/conftest.py`: `World`, which gives each scenario a state dir and a controller, and the `RecordingTarget`, `FaultyTarget` and `SimulatedCrash` test doubles.
+
+### Decided before building
+
+The user agreed all four proposed items:
+
+- **Known-bad list:** a successful `--allow-known-bad` deploy removes the mark, and retries don't add duplicates.
+- **`recover` path:** `recover` has its own logic and shares only the restore step with a deploy's rollback. It never marks a version known-bad.
+- **Measured failures:** a version is marked only if at least one probe reached it. A stalled rollout, failed `apply`, crash or overwritten version still rolls back, without a mark.
+- **Probe count:** a passed verification reads `3/3 consecutive healthy after 4 probes`.
+
+### What we decided along the way
+
+- **Timeouts and "no data" still mark a version.** A probe reached it and got no usable answer, so this fails closed, as the plan says. If that blocks a healthy version during a monitoring outage, `--allow-known-bad` gets past it.
+- **`in_flight.to_version` and `deployment_key` can be `null`.** The first means `recover` is removing what's running, because there is no known-good version. The second is for drift, which isn't a deployment.
+- **`recover` replaces the in-flight record** with its own, keeping the thresholds and the deployment key. A crash during `recover` is therefore recoverable too.
+- **`RecoveryRequired`:** if a run can't finish its rollback, for example because the target can't be read, it leaves the in-flight state in place and raises this error, which carries the `recover` instruction.
+- **A failed `apply` during rollback is `ROLLBACK_FAILED`, exit 5.** An error raised while verifying the rollback is `RecoveryRequired`, exit 1, as sections 4.1 and 4.5 of the plan say.
+- **Refused corrupt files are audited**, so the audit trail shows who tried and why it was refused.
+
+`active_artifact_sha256` needed no clearing logic. It is only set when a deploy completes, so a failed first deploy never sets it, and a rollback keeps the last known-good version's sha.
+
+### Problems along the way
+
+- **Double save:** the first draft saved `STABLE` and then saved again to clear `in_flight`, so a crash between the two would have left a stable environment with a run in flight. `_transition` now clears it in the same write. This was found by reading the draft, and no test would have caught it, because the window is between two saves.
+- **Lost instruction:** in the first draft, a failed save while `recover` was giving up would have lost the `recover` instruction. It was also found by reading the draft.
+- **Weak tests:** one "recorded artifact" test checked nothing, and a few others were sloppy. Coverage was already 100%, so we rewrote them by hand.
+
+### How it was verified
+
+- `make ci` passed locally on Python 3.12, with 488 tests and 100% branch coverage. The test suite also passed locally on Python 3.11.
+- We put 56 deliberate bugs into a throwaway copy, such as skipping the write-ahead save, removing each gate, or ignoring the stored thresholds. Three survived at first and each showed a missing assertion: the `SKIP` result on a `NO_OP`, the deployment key on `recover`, and `updated_at`. The tests now catch all 56.
+- The repair steps in section 12.1 of the plan now have scenarios, for repairing the file and for deleting it, including that each environment needs its own `recover` after a delete.
+
+### Left for later phases
+
+- Phase 5 must report `RecoveryRequired` and `StateCorruptError` as exit 1, and handle SIGINT during manifest validation, because the controller only handles it once it holds the lock.
+- A service with no traffic can produce NaN, fail verification and be marked known-bad. This is a known limitation for now.
+
+[Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.

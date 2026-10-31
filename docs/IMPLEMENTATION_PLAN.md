@@ -166,7 +166,7 @@ Rationale: distinct codes let CI/CD branch on "bad input" vs "bad release, alrea
 | Env `STABLE`, running = recorded = requested version, same artifact sha | `NO_OP`, audit records it, target **not** touched | 0 |
 | Requested version is active but the artifact sha differs (a rebuild) | `BLOCKED`: "already active with a different artifact; release a new version" | 6 |
 | Env `STABLE` at another version | Normal pipeline | 0 / 4 / 5 |
-| Requested version is in `failed_versions` for this env | `BLOCKED`: "previously failed verification; use `--allow-known-bad`" | 6 |
+| Requested version is in `failed_versions` for this env | `BLOCKED`: "previously failed verification; use `--allow-known-bad`". A successful `--allow-known-bad` deploy removes the mark | 6 |
 | Previous run crashed/interrupted (`DEPLOYING`/`VERIFYING`/`ROLLING_BACK` persisted) | `BLOCKED`: "in-flight run `<id>` at stage `<x>`; run `deployctl recover`" | 6 |
 | Env `NEEDS_ATTENTION` | `BLOCKED` until `recover` succeeds | 6 |
 | Lock held by another run | `BLOCKED` with owner/run id/since; lock not stolen | 6 |
@@ -177,14 +177,15 @@ Rationale: distinct codes let CI/CD branch on "bad input" vs "bad release, alrea
 ### 4.5 Failure handling rules
 
 - **Validation runs before the lock and before reading state.** A rejected manifest must leave `state.json` and `environment.json` byte-identical (assert this in tests).
-- **Adapter exception during `apply`** (an `Exception`): the env may be half-changed, so treat it as a failed deploy and roll back.
+- **Adapter exception during `apply`** (an `Exception`): the env may be half-changed, so treat it as a failed deploy and roll back. The version is not marked known-bad, because its health was never measured.
+- **Known-bad marks:** a version is marked only if at least one probe reached it. A stalled rollout, a failed `apply`, a crash or a version overwritten during verification all roll back without a mark. Probe timeouts and "no data" do mark it, failing closed. `recover` never marks anything.
 - **Probe timeout/error during verify:** counts as a failed probe (fail closed); verification continues until it passes or cannot pass.
 - **Rollout not finished within `rollout_timeout_seconds`:** verification fails with no probes run, and the normal rollback follows. The wait uses no health attempts, and the lock stays held throughout.
-- **Unexpected exception after `DEPLOYING` was saved:** best-effort rollback. If that raises too, leave the explicit in-flight state, exit 1, and print the `recover` instruction.
+- **Unexpected exception after `DEPLOYING` was saved:** best-effort rollback. If that raises too, leave the explicit in-flight state and raise `RecoveryRequired`, which carries the `recover` instruction and exits 1.
 - **SIGINT / hard kill:** do **not** take more automated actions after being told to stop. In-flight state is already persisted (write-ahead); exit 130 with the `recover` instruction. The lock is released in `finally`; a SIGKILL leaves a stale lockfile that `recover --break-lock` clears (recorded in audit).
 - **Corrupt or unknown-schema `state.json`, or corrupt `environment.json`:** refuse to run (exit 1) and **never overwrite it**; the operator must inspect it.
 - **First-ever deploy fails** (no previous known-good): rollback means removing the bad version. The env ends `STABLE` with nothing running, `rollback_status = NO_PREVIOUS_VERSION`.
-- **Rollback verification fails:** mark `NEEDS_ATTENTION`, exit 5, no further automatic actions. The new version is still recorded as failed, conservatively. Note in the README that when the rollback also fails, the root cause is likely environmental (e.g. a dependency outage), so the operator may legitimately use `--allow-known-bad` later.
+- **Rollback verification fails:** mark `NEEDS_ATTENTION`, exit 5, no further automatic actions. A version with a measured failure is still recorded as failed, conservatively. Note in the README that when the rollback also fails, the root cause is likely environmental (e.g. a dependency outage), so the operator may legitimately use `--allow-known-bad` later.
 
 ---
 
@@ -291,7 +292,9 @@ FAIL
 }
 ```
 
-`in_flight` while a run is active: `{"run_id", "deployment_key", "from_version", "to_version", "stage", "started_at", "health_check"}`. `health_check` holds every threshold of the deploy, because `recover` has no manifest to read them from. `in_flight` stays set in `NEEDS_ATTENTION` so that `recover` still has them.
+`in_flight` while a run is active: `{"run_id", "deployment_key", "from_version", "to_version", "stage", "started_at", "health_check"}`. `health_check` holds every threshold of the deploy, because `recover` has no manifest to read them from. `in_flight` stays set in `NEEDS_ATTENTION` so that `recover` still has them, and it is cleared in the same write that sets `STABLE`.
+
+A `recover` replaces the record with its own, so a crash during `recover` stays explicit. There, `to_version` is `null` when there is no known-good version and the running version is removed, and `deployment_key` is `null` for drift, which is not a deployment.
 
 **Strict on load:** the file must match this schema exactly. `schema_version` must be the integer `1`, a missing or unknown key is corrupt, and stored thresholds must pass the manifest's rules (`parse_health_check()`). Saving reads the file first, so a corrupt ledger raises instead of being overwritten.
 
@@ -339,7 +342,7 @@ Rejected attempts are audited too (service/env may be `null` if the manifest cou
     {"seq": 3, "ts": "2026-11-01T10:15:01.010Z", "stage": "deploy", "result": "PASS", "message": "running version -> 1.5.0"},
     {"seq": 4, "ts": "2026-11-01T10:15:01.011Z", "stage": "verify", "result": "FAIL", "message": "0/3 consecutive healthy after 3 probes (error_rate 0.120 > 0.010)"},
     {"seq": 5, "ts": "2026-11-01T10:15:01.013Z", "stage": "rollback", "result": "PASS", "message": "running version -> 1.4.2"},
-    {"seq": 6, "ts": "2026-11-01T10:15:01.020Z", "stage": "verify_rollback", "result": "PASS", "message": "3/3 consecutive healthy"}
+    {"seq": 6, "ts": "2026-11-01T10:15:01.020Z", "stage": "verify_rollback", "result": "PASS", "message": "3/3 consecutive healthy after 3 probes"}
   ]
 }
 ```
@@ -365,7 +368,7 @@ Common options (on every subcommand via an argparse parent parser):
 
 - **No default health source.** If `--health-profile` is missing, `deploy` errors (fail closed rather than assume healthy). A missing or malformed profile file exits 2 as well, checked before the lock and before state is read. The same applies to `recover`.
 - `validate` needs no state, so it can run in CI on every manifest PR (shift-left).
-- `recover` requires `--reason` (audited). Behavior: no-op if `STABLE` with no drift; otherwise roll back to last known-good (or remove if none), verify, then `RECOVERED` (exit 0) or `ROLLBACK_FAILED` (exit 5). Verification uses the thresholds stored in `in_flight.health_check`; drift has no in-flight record, so it uses the defaults.
+- `recover` requires `--reason` (audited). Behavior: no-op if `STABLE` with no drift; otherwise roll back to last known-good (or remove if none), verify, then `RECOVERED` (exit 0) or `ROLLBACK_FAILED` (exit 5). Verification uses the thresholds stored in `in_flight.health_check`; drift has no in-flight record, so it uses the defaults. `recover` has its own path, shares only the restore step with a deploy's rollback, and never marks a version known-bad. `--break-lock` is audited with the previous holder.
 - `cli.main(argv) -> int` is what tests call. `cli.run()` does `sys.exit(main())` and is used by `__main__.py` and the zipapp. **Gotcha (verified):** `python -m zipapp -m mod:fn` generates `mod.fn()` and *discards the return value*, so pointing it at `main` would lose exit codes. Point it at `run`.
 
 **Example text output (failed health check with automatic rollback):**
@@ -380,7 +383,7 @@ orders-api/staging  1.4.2 -> 1.5.0  change CHG-1042  by catalin
   3  10:15:01.010  deploy           PASS    running version -> 1.5.0
   4  10:15:01.011  verify           FAIL    0/3 consecutive healthy after 3 probes (error_rate 0.120 > 0.010)
   5  10:15:01.013  rollback         PASS    running version -> 1.4.2
-  6  10:15:01.020  verify_rollback  PASS    3/3 consecutive healthy
+  6  10:15:01.020  verify_rollback  PASS    3/3 consecutive healthy after 3 probes
 
 OUTCOME ROLLED_BACK   rollback SUCCEEDED   env STABLE @ 1.4.2   exit 4
 NEXT    1.5.0 is marked known-bad for orders-api/staging; investigate before retrying with --allow-known-bad
@@ -412,6 +415,7 @@ safe-deploy-controller/
 │   │         test_clock.py test_health.py test_target.py test_transitions.py
 │   ├── scenarios/ test_deploy_success.py test_invalid_input.py test_failed_health.py
 │   │              test_repeated_execution.py test_crash_recovery.py test_locking.py
+│   │              test_demo_sequence.py
 │   └── cli/ test_cli.py test_zipapp_smoke.py
 ├── .gitignore  Makefile  pyproject.toml  requirements-dev.txt
 ├── README.md
@@ -622,6 +626,7 @@ class Verdict:
     probes: int
     consecutive: int
     summary: str  # e.g. "0/3 consecutive healthy after 3 probes (error_rate 0.120 > 0.010)"
+    health_measured: bool  # False: no probe reached this version, so it says nothing about it
 ```
 
 ### 8.3 `controller.py`: the core flow
@@ -1032,7 +1037,7 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
    - *Observability gates:* compare canary vs baseline on error rate, p99 latency, saturation; SLO burn-rate check; synthetic checks; require minimum traffic for a meaningful decision; missing metrics = fail; annotate dashboards with deploy events; auto-rollback on burn.
    - *Access controls:* least privilege; deployer identity via short-lived OIDC credentials (no long-lived secrets); separation of duties; signed artifacts verified before apply; audit log shipped to tamper-evident storage.
    - *Making this controller production-grade:* replace the lockfile with a distributed lease + fencing token (etcd/Consul/DynamoDB conditional writes); state in a durable store with optimistic concurrency; real adapters behind the existing `DeploymentTarget`/`HealthProbe` ports (Kubernetes/Argo CD, Prometheus/Datadog); notifications to chat/paging on `NEEDS_ATTENTION`; metrics on deploy outcomes (change failure rate, MTTR).
-9. **Known limitations / shortcuts**: global lock, single host, no real artifact store, rollback verification reuses the new manifest's thresholds, drift `recover` uses default thresholds, no pre-release semver, no resume-from-stage after crash (recover rolls back instead), a corrupt `environment.json` blocks every environment until repaired by hand.
+9. **Known limitations / shortcuts**: global lock, single host, no real artifact store, rollback verification reuses the new manifest's thresholds, drift `recover` uses default thresholds, no pre-release semver, no resume-from-stage after crash (recover rolls back instead), a service with no traffic can produce NaN and fail verification, a corrupt `environment.json` blocks every environment until repaired by hand.
    - *Repairing a corrupt `environment.json` (required):* the controller refuses the file and `recover` can't fix it (section 14), so the README must give the operator these steps:
      1. Copy the file aside and inspect it.
      2. Repair it if the correct content is clear. Otherwise delete it. Deleting affects every environment: each one then reads as nothing running, so each needs its own `recover`.
@@ -1086,6 +1091,8 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
 | Store thresholds in `in_flight` | `recover` verifies against what the failed deploy promised, and they are validated on load so editing `state.json` cannot loosen a rollback | Larger ledger; drift still falls back to defaults |
 | Release the lock only if the run still owns it | A run whose lock was broken must not remove the next run's lock | Check-then-unlink is not atomic; fine for a single host |
 | Refuse a corrupt `environment.json` and repair it by hand | Unknown state means block and ask a human (P1). Treating the file as empty could erase other environments' records, and rebuilding it from `state.json` would defeat drift detection | One bad file blocks every environment, including `recover`, and the hand repair is not audited. Requires the documented repair steps (12.1). An audited `recover --reset-target` was considered and left out |
+| Mark known-bad only when health was measured | A block should mean the version was seen to fail, not that the rollout stalled or someone overwrote it | Those versions can be retried straight away; a version that only times out is still marked |
+| Give `recover` its own path | A rollback marks the failed version, but drift has no failed version and no in-flight record | Two callers of the shared restore step |
 | Wait for the rollout before verifying | Real targets finish rollouts after `apply` returns, and a slow rollout must not use up health attempts | A new manifest field; the lock is held for up to `rollout_timeout_seconds` longer, and a stalled rollout is still marked known-bad |
 | Check the whole health profile on load, keys included; a bad one exits 2 | A bad entry found during verify would fail a good release after `apply`, roll it back and mark it known-bad. Exit 2 matches a missing `--health-profile` | A typo in an unrelated entry blocks the deploy; a valid but wrong key is still missed; the refused attempt is not in `audit.jsonl` |
 
@@ -1120,8 +1127,9 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 2. State, lock, audit, clock | Done | [PR #2](https://github.com/CatalinFediuc/safe-deploy-controller/pull/2) |
 | 2a. Pre-Phase 3 adjustments | Done | [PR #3](https://github.com/CatalinFediuc/safe-deploy-controller/pull/3) |
 | 3. Target + health | Done | [PR #6](https://github.com/CatalinFediuc/safe-deploy-controller/pull/6), decision review in [PR #7](https://github.com/CatalinFediuc/safe-deploy-controller/pull/7) |
-| 4. Controller | Next | |
-| 5 to 7 | Not started | |
+| 4. Controller | Done | branch `feat/phase-4-controller` |
+| 5. CLI + rendering | Next | |
+| 6 to 7 | Not started | |
 
 ### 16.2 Changes from the original plan
 
@@ -1144,6 +1152,11 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 3 | `verify()` waits for the rollout first, using the new `rollout_timeout_seconds`, and a mismatch after that is a failed attempt that skips the probe | Real targets finish after `apply` returns, and health of another version says nothing about the one being verified. `schema_version` stays `1`, because no real state files exist yet | 4.5, 5.1, 5.2, 8.1, 14 |
 | 3 | `verify()` refuses NaN, infinite and negative metrics itself, and reports them and empty probe errors clearly | Only the fixture loader refused negatives, so a real probe returning `-1` would have read as healthy | 5.2 |
 | 3 | `is_finite_number()`, `SERVICE_RE` and `VERSION_RE` in `manifest.py` are now public | Profiles use the same rules as manifests | none |
+| 4 | `in_flight.to_version` and `deployment_key` may be `null` | Drift with no known-good version has no target, and drift is not a deployment | 5.3 |
+| 4 | `recover` has its own path, and a version is marked known-bad only if a probe reached it | Agreed before Phase 4 from the proposed items | 4.5, 6, 14 |
+| 4 | A successful `--allow-known-bad` deploy clears the mark, and retries add no duplicates | Agreed before Phase 4 from the proposed items | 4.4 |
+| 4 | A passed verification also shows its probe count | Agreed before Phase 4 from the proposed items | 5.6, 6 |
+| 4 | Added `RecoveryRequired` | A run that can't finish its rollback needs to carry the `recover` instruction to exit 1 | 4.5 |
 
 ### 16.3 Open items
 
@@ -1151,27 +1164,13 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 
 - Add an entry to [ai-log.md](ai-log.md), including the time spent. `AI_PROCESS.md` and the time note depend on it.
 
-**Phase 4, required**
-
-- Build what the new ledger fields are for: the rebuilt-artifact gate, setting and clearing `active_artifact_sha256`, keeping `in_flight` in `NEEDS_ATTENTION`, and passing the stored thresholds to `recover`.
-- `in_flight.to_version` must be a string, but a drift `recover` with no last known-good version has no target to record. Decide what goes there.
-- Let `Recorder` bind partial identity. `bind()` takes a full `Manifest`, but rejected runs and `recover` don't have one.
-- Make `ManifestError` carry the parsed service and environment, so rejected runs are audited with them.
-- Handle errors raised while `verify()` reads the target. Probe failures count as failed probes, but a corrupt `environment.json` or an `OSError` propagates, so it must reach the unexpected-exception path in 4.5.
-- Add a scenario that follows the repair steps in 12.1: corrupt `environment.json`, deploy and `recover` refuse it, the file is repaired or deleted, and `recover` then reconciles. The repair steps assume this works, and nothing tests it yet.
-
-**Phase 4, proposed and not yet agreed**
-
-- Remove a version from `failed_versions` when an `--allow-known-bad` deploy succeeds, and don't add duplicates on retry.
-- Give `recover` its own path instead of reusing `_rollback` as written, because `_rollback` reads `state.in_flight.to_version`, and don't mark anything as failed for drift.
-- Don't mark a version known-bad when its health was never measured. A stalled rollout, or a version overwritten during verification, goes through `_rollback` like an unhealthy release, so `Verdict` would need to report the cause.
-- Record the probe count for a passed verification. `Verdict.probes` has it, but the summary `3/3 consecutive healthy` from 5.6 doesn't show that a flaky version needed extra attempts.
-
 **Phase 5, required**
 
 - Make the `history` reader tolerate a partial last line in `audit.jsonl`, which a hard kill during an append can leave.
 - Add `make smoke` back to `make ci`.
 - Build `FixtureHealthProbe` before taking the lock and before reading state, for `deploy` and `recover`, and report `HealthProfileError` as exit 2.
+- Report `RecoveryRequired` and `StateCorruptError` as exit 1, printing the message to stderr. Neither has an `Outcome`.
+- Handle SIGINT during manifest validation. The controller only turns `KeyboardInterrupt` into `INTERRUPTED` once it holds the lock.
 
 **Phase 5, proposed and not yet agreed**
 

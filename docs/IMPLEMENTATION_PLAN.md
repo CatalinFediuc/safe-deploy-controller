@@ -1123,9 +1123,9 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 
 ### 16.3 Open items
 
-**Separate PR, agreed**
+**Every phase**
 
-- Start `docs/ai-log.md` (section 0). `AI_PROCESS.md` and the time note depend on it, and so far only commit times exist.
+- Add an entry to [ai-log.md](ai-log.md), including the time spent. `AI_PROCESS.md` and the time note depend on it.
 
 **Phase 4, required**
 

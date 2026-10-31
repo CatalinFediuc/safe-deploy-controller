@@ -2,6 +2,7 @@
 
 > Working name: **`deployctl`**, repo **`safe-deploy-controller`**, Python **3.11+**, **stdlib-only runtime**.
 > Source: *EOC SRE Engineer Take-Home Exercises v1.0*, Option 4.
+> Status, changes since the original plan and open items: section 16.
 
 ---
 
@@ -86,7 +87,8 @@ flowchart LR
 | `models.py` | Enums and dataclasses: `Manifest`, `HealthCheckSpec`, `EnvironmentState`, `InFlight`, `StepRecord`, `DeploymentResult` | none |
 | `errors.py` | Exception hierarchy (`ManifestError`, `LockHeld`, `StateCorruptError`, `ProbeTimeout`, ...) | none |
 | `manifest.py` | `load_manifest(path, artifact_dir)`: strict schema, collects **all** errors, path-traversal check, streamed sha256 | reads files |
-| `state.py` | `StateStore` (atomic JSON writes, schema version), `FileLock` (O_CREAT/O_EXCL lockfile with owner metadata) | writes state dir |
+| `fileio.py` | `write_atomic(path, content)`: tmp file, fsync, rename, directory fsync. Shared by `state.py` and `target.py` | writes files |
+| `state.py` | `StateStore` (atomic JSON writes, schema version), `FileLock` (O_CREAT/O_EXCL lockfile with owner metadata), `ALLOWED_TRANSITIONS` | writes state dir |
 | `audit.py` | `AuditLog` (append-only JSONL, fsync per event), `Recorder` (seq numbers, timestamps, step list, builds result) | appends audit file |
 | `target.py` | `DeploymentTarget` protocol; `SimulatedTarget` persisting "running version" per env in `environment.json` | writes target file |
 | `health.py` | `HealthProbe` protocol; `FixtureHealthProbe`; pure `verify()` gating logic | reads fixture |
@@ -133,6 +135,8 @@ stateDiagram-v2
     ROLLING_BACK --> NEEDS_ATTENTION: rollback failed
     DEPLOYING --> ROLLING_BACK: recover (after crash)
     VERIFYING --> ROLLING_BACK: recover (after crash)
+    ROLLING_BACK --> ROLLING_BACK: recover (crash mid-rollback)
+    STABLE --> ROLLING_BACK: recover (drift)
     NEEDS_ATTENTION --> ROLLING_BACK: recover
 ```
 
@@ -159,7 +163,8 @@ Rationale: distinct codes let CI/CD branch on "bad input" vs "bad release, alrea
 
 | Situation when `deploy` is (re)run | Behavior | Exit |
 |---|---|---|
-| Env `STABLE`, running = recorded = requested version | `NO_OP`, audit records it, target **not** touched | 0 |
+| Env `STABLE`, running = recorded = requested version, same artifact sha | `NO_OP`, audit records it, target **not** touched | 0 |
+| Requested version is active but the artifact sha differs (a rebuild) | `BLOCKED`: "already active with a different artifact; release a new version" | 6 |
 | Env `STABLE` at another version | Normal pipeline | 0 / 4 / 5 |
 | Requested version is in `failed_versions` for this env | `BLOCKED`: "previously failed verification; use `--allow-known-bad`" | 6 |
 | Previous run crashed/interrupted (`DEPLOYING`/`VERIFYING`/`ROLLING_BACK` persisted) | `BLOCKED`: "in-flight run `<id>` at stage `<x>`; run `deployctl recover`" | 6 |
@@ -267,6 +272,7 @@ FAIL
     "orders-api/staging": {
       "status": "STABLE",
       "active_version": "1.4.2",
+      "active_artifact_sha256": "<64 hex chars>",
       "last_known_good": "1.4.2",
       "known_good_history": ["1.4.2"],
       "failed_versions": ["1.5.0"],
@@ -278,9 +284,13 @@ FAIL
 }
 ```
 
-`in_flight` while a run is active: `{"run_id", "deployment_key", "from_version", "to_version", "stage", "started_at"}`.
+`in_flight` while a run is active: `{"run_id", "deployment_key", "from_version", "to_version", "stage", "started_at", "health_check"}`. `health_check` holds every threshold of the deploy, because `recover` has no manifest to read them from. `in_flight` stays set in `NEEDS_ATTENTION` so that `recover` still has them.
 
-**Atomic write:** write `state.json.tmp` → `flush` → `os.fsync` → `os.replace` (atomic on POSIX). Keep `known_good_history` bounded (last 10).
+**Strict on load:** the file must match this schema exactly. `schema_version` must be the integer `1`, a missing or unknown key is corrupt, and stored thresholds must pass the manifest's rules (`parse_health_check()`). Saving reads the file first, so a corrupt ledger raises instead of being overwritten.
+
+**Atomic write:** `fileio.write_atomic()` writes `state.json.tmp` → `flush` → `os.fsync` → `os.replace` (atomic on POSIX) → fsync the directory, so the rename survives power loss. A failed write removes the tmp file. Keep `known_good_history` bounded (last 10).
+
+**Lockfile:** `<state-dir>/deployctl.lock` holds `{"owner", "pid", "since"}`. An empty or unreadable lockfile counts as held by `unknown`. A run releases the lock only if it still owns it, so a run whose lock was broken cannot remove the next run's lock.
 
 ### 5.4 Simulated target: `<state-dir>/environment.json`
 
@@ -295,6 +305,8 @@ FAIL
 ```
 
 Rejected attempts are audited too (service/env may be `null` if the manifest could not be parsed). Who tried what, and why it was refused, is useful audit data.
+
+`seq` restarts at 1 for each run, so readers must group events by `run_id`.
 
 ### 5.6 Result (stdout with `--output json`; stdout carries only JSON, diagnostics go to stderr)
 
@@ -344,7 +356,7 @@ Common options (on every subcommand via an argparse parent parser):
 
 - **No default health source.** If `--health-profile` is missing, `deploy` errors (fail closed rather than assume healthy).
 - `validate` needs no state, so it can run in CI on every manifest PR (shift-left).
-- `recover` requires `--reason` (audited). Behavior: no-op if `STABLE` with no drift; otherwise roll back to last known-good (or remove if none), verify, then `RECOVERED` (exit 0) or `ROLLBACK_FAILED` (exit 5).
+- `recover` requires `--reason` (audited). Behavior: no-op if `STABLE` with no drift; otherwise roll back to last known-good (or remove if none), verify, then `RECOVERED` (exit 0) or `ROLLBACK_FAILED` (exit 5). Verification uses the thresholds stored in `in_flight.health_check`; drift has no in-flight record, so it uses the defaults.
 - `cli.main(argv) -> int` is what tests call. `cli.run()` does `sys.exit(main())` and is used by `__main__.py` and the zipapp. **Gotcha (verified):** `python -m zipapp -m mod:fn` generates `mod.fn()` and *discards the return value*, so pointing it at `main` would lose exit codes. Point it at `run`.
 
 **Example text output (failed health check with automatic rollback):**
@@ -375,6 +387,7 @@ safe-deploy-controller/
 ├── .vscode/{settings.json, launch.json, extensions.json}
 ├── docs/
 │   ├── IMPLEMENTATION_PLAN.md        # this file
+│   ├── README.md                     # what happened in each phase
 │   └── ai-log.md                     # running notes for AI_PROCESS.md (optional)
 ├── examples/
 │   ├── artifacts/                    # tiny .bin files (fixed content)
@@ -383,10 +396,11 @@ safe-deploy-controller/
 ├── scripts/gen_examples.py           # regenerates artifacts + fills sha256 into manifests
 ├── src/deployctl/
 │   ├── __init__.py  __main__.py  cli.py  controller.py  models.py  errors.py
-│   ├── manifest.py  state.py  audit.py  target.py  health.py  clock.py  render.py
+│   ├── manifest.py  state.py  fileio.py  audit.py  target.py  health.py  clock.py  render.py
 ├── tests/
-│   ├── conftest.py                   # FakeClock, tmp state dir, fixture builders, fakes
-│   ├── unit/ test_manifest.py test_state.py test_audit.py test_health.py test_transitions.py
+│   ├── conftest.py                   # FakeClock, tmp state dir, run_ids, make_manifest, fakes
+│   ├── unit/ test_models.py test_manifest.py test_state.py test_fileio.py test_audit.py
+│   │         test_clock.py test_health.py test_transitions.py
 │   ├── scenarios/ test_deploy_success.py test_invalid_input.py test_failed_health.py
 │   │              test_repeated_execution.py test_crash_recovery.py test_locking.py
 │   └── cli/ test_cli.py test_zipapp_smoke.py
@@ -532,6 +546,7 @@ class InFlight:
     to_version: str
     stage: Stage
     started_at: str
+    health_check: HealthCheckSpec  # `recover` has no manifest to take its thresholds from
 
 
 @dataclass
@@ -540,6 +555,7 @@ class EnvironmentState:
     environment: str
     status: EnvStatus = EnvStatus.STABLE
     active_version: str | None = None
+    active_artifact_sha256: str | None = None  # a version number alone can hide a rebuild
     last_known_good: str | None = None
     known_good_history: list[str] = field(default_factory=list)
     failed_versions: list[str] = field(default_factory=list)
@@ -626,6 +642,7 @@ class DeploymentController:
 
         with lock:
             state = self._store.load(manifest.service, manifest.environment)
+            rec.bind_from_version(state.active_version)  # the manifest can't say what is running
             gate = self._preflight(state, manifest, opts)  # -> Gate(NO_OP|BLOCKED) | None
             if gate is not None:
                 rec.step(Stage.PREFLIGHT, gate.result, gate.reason)
@@ -653,7 +670,7 @@ class DeploymentController:
                 return self._rollback(state, rec, manifest.health_check)
 
             # 5. COMPLETE: new known-good
-            self._complete(state, manifest.version)  # STABLE, lkg=version, in_flight=None
+            self._complete(state, manifest)  # STABLE, lkg=version, active sha set, in_flight=None
             rec.step(Stage.COMPLETE, StepResult.PASS, f"{manifest.version} is now known-good")
             return rec.finish(Outcome.SUCCEEDED, state=state)
 
@@ -664,6 +681,8 @@ class DeploymentController:
         if running != state.active_version:
             return Gate.blocked(f"drift: recorded {state.active_version}, running {running}")
         if state.active_version == m.version:
+            if state.active_artifact_sha256 != m.artifact_sha256:
+                return Gate.blocked(f"{m.version} already active with a different artifact")
             return Gate.no_op(f"{m.version} already active")
         if m.version in state.failed_versions and not opts.allow_known_bad:
             return Gate.blocked(f"{m.version} previously failed here; use --allow-known-bad")
@@ -680,12 +699,12 @@ class DeploymentController:
             if good is None:
                 self._target.remove(state.env_key)
                 rec.step(Stage.ROLLBACK, StepResult.PASS, f"no previous version; removed {bad}")
-                self._settle(state, active=None)
+                self._settle(state, active=None)  # also clears active_artifact_sha256
                 return rec.finish(Outcome.ROLLED_BACK, RollbackStatus.NO_PREVIOUS_VERSION, state)
             self._target.apply(state.env_key, good)
         except Exception as exc:
             rec.step(Stage.ROLLBACK, StepResult.FAIL, f"rollback apply failed: {exc}")
-            return self._give_up(state, rec)  # NEEDS_ATTENTION, exit 5
+            return self._give_up(state, rec)  # NEEDS_ATTENTION, exit 5, in_flight kept
         rec.step(Stage.ROLLBACK, StepResult.PASS, f"running version -> {good}")
         verdict = verify(self._probe, self._target, self._clock, state.env_key, good, spec)
         rec.step(Stage.VERIFY_ROLLBACK, StepResult.PASS if verdict.passed else StepResult.FAIL,
@@ -696,7 +715,7 @@ class DeploymentController:
         return rec.finish(Outcome.ROLLED_BACK, RollbackStatus.SUCCEEDED, state)
 ```
 
-`_transition()` checks `ALLOWED_TRANSITIONS`, updates `in_flight.stage` and `updated_at`, and **saves immediately**. `recover()` reuses `_rollback`-style logic, but starts from whatever explicit state it finds.
+`_transition()` checks `ALLOWED_TRANSITIONS`, updates `in_flight.stage` and `updated_at`, and **saves immediately**. `recover()` reuses `_rollback`-style logic, but starts from whatever explicit state it finds, and passes `state.in_flight.health_check` as the spec (`HealthCheckSpec()` for drift).
 
 ---
 
@@ -740,7 +759,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "PTH", "RUF", "S"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src"]
+files = ["src", "tests", "scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -940,8 +959,9 @@ jobs:
 | **0. Scaffold** | 15m | git init, `.gitignore`, `pyproject.toml`, `Makefile`, `.vscode/*`, `__init__.py` (`__version__`), `__main__.py`, `cli.py` with `--version`, `make lock` | `test_version_flag` | `chore: scaffold project with build/test tooling` |
 | **1. Models + validation** | 25m | `models.py`, `errors.py`, `manifest.py` (strict schema, collect-all errors, traversal check, streamed sha256), `scripts/gen_examples.py` + example artifacts/manifests | valid; malformed JSON; non-object; each missing field; all errors reported together; unknown key; bad semver; unknown env; bad change id; missing artifact; traversal; checksum mismatch; health bounds (parametrized) | `feat: manifest model and strict validation` |
 | **2. State, lock, audit, clock** | 25m | `StateStore` (atomic save, schema version, corrupt → error), `FileLock`, `AuditLog`, `Recorder`, `SystemClock`; `FakeClock` + fixtures in `conftest.py` | round-trip; failed `os.replace` leaves old file intact (monkeypatch); corrupt file raises and is not overwritten; lock contention raises `LockHeld`; `break_lock`; audit seq/order; transition table allows/denies | `feat: atomic state store, lockfile and audit log` |
-| **3. Target + health** | 20m | `SimulatedTarget`, `FixtureHealthProbe`, `verify()` | healthy; unhealthy; flaky→pass; timeout/error counted as failure; no data → fail; threshold boundary (`==` passes); missing metric fails; early exit; running-version mismatch fails; no real sleeping (FakeClock records sleeps) | `feat: simulated target and health verification` |
-| **4. Controller** | 35m | `deploy` pipeline, gates, write-ahead transitions, `_rollback`, `_give_up`, `recover`, interrupt handling | scenario suite T1–T14 (section 11) | `feat: deploy pipeline with verification gate`, `feat: automatic rollback to last known-good`, `feat: idempotent re-runs, locking and recover` |
+| **2a. Pre-Phase 3 adjustments** | — | `active_artifact_sha256` and `InFlight.health_check` in the ledger; shared `parse_health_check()`; `fileio.write_atomic()`; `make_manifest` and `run_ids` in `conftest.py`; mypy over tests and scripts | thresholds round-trip; bad or missing stored thresholds are corrupt; `write_atomic` durability order and failure cleanup | `feat: record artifact sha and health thresholds in the ledger`, `refactor: move atomic file write into a shared module`, `test: shared test builders, tests/cli layout, type-check tests` |
+| **3. Target + health** | 20m | `SimulatedTarget` (using `fileio.write_atomic`), `FixtureHealthProbe`, `verify()` | healthy; unhealthy; flaky→pass; timeout/error counted as failure; no data → fail; threshold boundary (`==` passes); missing metric fails; early exit; running-version mismatch fails; no real sleeping (FakeClock records sleeps) | `feat: simulated target and health verification` |
+| **4. Controller** | 35m | `deploy` pipeline, gates, write-ahead transitions, `_rollback`, `_give_up`, `recover`, interrupt handling | scenario suite T1–T14, T20, T21 (section 11) | `feat: deploy pipeline with verification gate`, `feat: automatic rollback to last known-good`, `feat: idempotent re-runs, locking and recover` |
 | **5. CLI + rendering** | 20m | argparse subcommands with a parent parser, adapter wiring, text/JSON renderers, `status`, `history`, `validate`, exit codes, `run()` | `main([...])` per scenario → exit code; `--output json` stdout parses as JSON; usage error → 2 | `feat: CLI, renderers and exit codes` |
 | **6. Demo + examples** | 10m | `make demo`; run it and paste output into the README | (demo is a manual check) | `docs: example scenarios and demo target` |
 | **7. Package, CI, docs** | 25m | `make build/smoke`, `ci.yml`, `README.md`, `AI_PROCESS.md`, time note, `make dist-tarball` | `test_zipapp_smoke` (build `.pyz` into tmp, run it, assert exit code 3 on invalid manifest) | `build: wheel, zipapp and CI workflow`, `docs: README and AI process` |
@@ -976,6 +996,8 @@ Use `tmp_path` for every state dir, `FakeClock`, a deterministic `run_id` factor
 | T17 | `--dry-run` | safety | no state or target changes |
 | T18 | Downgrade | safety | `BLOCKED` unless `--allow-downgrade` |
 | T19 | Zipapp smoke | packaging | `.pyz` runs; exit codes propagate |
+| T20 | Same version, rebuilt artifact | repeated execution | `BLOCKED` (6); `apply` not called; ledger still holds the original sha |
+| T21 | `recover` after a crash or `NEEDS_ATTENTION` | failure path | rollback verified against the failed deploy's stored thresholds, not the defaults |
 
 Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguous" claim, so call it out in the README.
 
@@ -1000,7 +1022,7 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
    - *Observability gates:* compare canary vs baseline on error rate, p99 latency, saturation; SLO burn-rate check; synthetic checks; require minimum traffic for a meaningful decision; missing metrics = fail; annotate dashboards with deploy events; auto-rollback on burn.
    - *Access controls:* least privilege; deployer identity via short-lived OIDC credentials (no long-lived secrets); separation of duties; signed artifacts verified before apply; audit log shipped to tamper-evident storage.
    - *Making this controller production-grade:* replace the lockfile with a distributed lease + fencing token (etcd/Consul/DynamoDB conditional writes); state in a durable store with optimistic concurrency; real adapters behind the existing `DeploymentTarget`/`HealthProbe` ports (Kubernetes/Argo CD, Prometheus/Datadog); notifications to chat/paging on `NEEDS_ATTENTION`; metrics on deploy outcomes (change failure rate, MTTR).
-9. **Known limitations / shortcuts**: global lock, single host, no real artifact store, rollback verification reuses the new manifest's thresholds, no pre-release semver, no resume-from-stage after crash (recover rolls back instead).
+9. **Known limitations / shortcuts**: global lock, single host, no real artifact store, rollback verification reuses the new manifest's thresholds, drift `recover` uses default thresholds, no pre-release semver, no resume-from-stage after crash (recover rolls back instead).
 10. **Time spent and what I'd do with another day.**
 
 ### 12.2 `AI_PROCESS.md` outline (required by the PDF)
@@ -1046,6 +1068,9 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
 | Global lock rather than per-env | Simplicity | Serializes unrelated deploys |
 | Distinct exit codes | Automation can branch on bad input vs mitigated vs page | More to document |
 | SIGINT → exit 130, no further actions | Respect the operator's stop; state already explicit | Env stays in-flight until `recover` |
+| Block a rebuilt artifact at an active version | A version must mean one artifact; otherwise `NO_OP` would hide that nothing was deployed | A rebuild needs a new version number |
+| Store thresholds in `in_flight` | `recover` verifies against what the failed deploy promised, and they are validated on load so editing `state.json` cannot loosen a rollback | Larger ledger; drift still falls back to defaults |
+| Release the lock only if the run still owns it | A run whose lock was broken must not remove the next run's lock | Check-then-unlink is not atomic; fine for a single host |
 
 ---
 
@@ -1061,3 +1086,74 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
 - [ ] No credentials, customer data, or internal names; example service names are generic
 - [ ] Meaningful commit history (one or more commits per phase)
 - [ ] `make dist-tarball` produces the submission archive (if not sharing a private repo)
+
+---
+
+## 16. Progress and changes since the original plan
+
+Sections 1 to 15 have been updated to match the code. This section records what changed and why, and what is still open. [README.md](README.md) has the fuller story of each phase, including how it was verified.
+
+### 16.1 Status
+
+| Phase | Status | Where |
+|---|---|---|
+| 0. Scaffold | Done | commits `d2295f3`, `92ecabb` |
+| 1. Models + validation | Done | [PR #1](https://github.com/CatalinFediuc/safe-deploy-controller/pull/1) |
+| 2. State, lock, audit, clock | Done | [PR #2](https://github.com/CatalinFediuc/safe-deploy-controller/pull/2) |
+| 2a. Pre-Phase 3 adjustments | Done | [PR #3](https://github.com/CatalinFediuc/safe-deploy-controller/pull/3) |
+| 3. Target + health | Next | |
+| 4 to 7 | Not started | |
+
+### 16.2 Changes from the original plan
+
+| Phase | Change | Why | Sections updated |
+|---|---|---|---|
+| 1 | Validation also rejects unknown nested keys, duplicate JSON keys, booleans used as integers, non-finite numbers, leading zeros and non-ASCII digits in versions, and unsafe symlinks | Each could have let a bad manifest through without an error | see [README.md](README.md) |
+| 1 | `make smoke` is out of `make ci` until `validate` exists in Phase 5 | The smoke test needs that command | 9.2 still shows the final target |
+| 2 | Added `STABLE -> ROLLING_BACK` and `ROLLING_BACK -> ROLLING_BACK` | `recover` needs them for drift (T13) and a crash mid-rollback (T11) | 4.2 |
+| 2 | Added `Recorder.bind_from_version()` | The manifest can't say what is running, and `in_flight` and the result both need `from_version` | 8.3 |
+| 2 | `state.json` must match the schema exactly, and `schema_version` must be the integer `1` | Saving would silently drop an unknown key, and `true` and `1.0` both equal `1` | 5.3 |
+| 2 | Directory fsync after each rename; failed writes remove the tmp file | Write-ahead intent must survive power loss | 5.3 |
+| 2 | `release()` checks ownership; an unreadable lockfile counts as held | A broken lock must not lead to removing the next run's lock | 5.3, 14 |
+| 2a | Added `active_artifact_sha256` and a preflight gate for rebuilt artifacts (gate not built yet) | A rebuild at the same version would have been a `NO_OP` with nothing deployed | 4.4, 5.3, 8.1, 8.3, 11, 14 |
+| 2a | Added `InFlight.health_check`, kept through `NEEDS_ATTENTION` | `recover` has no manifest to take thresholds from | 5.3, 6, 8.1, 8.3, 11, 14 |
+| 2a | Added `parse_health_check()`, shared by manifests and the ledger | One set of rules, and a hand-edited ledger can't loosen a rollback | 5.3 |
+| 2a | Added `fileio.py` | `target.py` needs the same write without importing the ledger | 3, 5.3, 7, 10 |
+| 2a | `make_manifest` and `run_ids` in `conftest.py`; mypy covers tests and scripts | Ready for the Phase 4 scenarios; a fake that drifts from its protocol fails the build | 7, 9.1 |
+
+### 16.3 Open items
+
+**Separate PR, agreed**
+
+- Start `docs/ai-log.md` (section 0). `AI_PROCESS.md` and the time note depend on it, and so far only commit times exist.
+
+**Phase 4, required**
+
+- Build what the new ledger fields are for: the rebuilt-artifact gate, setting and clearing `active_artifact_sha256`, keeping `in_flight` in `NEEDS_ATTENTION`, and passing the stored thresholds to `recover`.
+- `in_flight.to_version` must be a string, but a drift `recover` with no last known-good version has no target to record. Decide what goes there.
+- Let `Recorder` bind partial identity. `bind()` takes a full `Manifest`, but rejected runs and `recover` don't have one.
+- Make `ManifestError` carry the parsed service and environment, so rejected runs are audited with them.
+
+**Phase 4, proposed and not yet agreed**
+
+- Remove a version from `failed_versions` when an `--allow-known-bad` deploy succeeds, and don't add duplicates on retry.
+- Give `recover` its own path instead of reusing `_rollback` as written, because `_rollback` reads `state.in_flight.to_version`, and don't mark anything as failed for drift.
+
+**Phase 5, required**
+
+- Make the `history` reader tolerate a partial last line in `audit.jsonl`, which a hard kill during an append can leave.
+- Add `make smoke` back to `make ci`.
+
+**Phase 5, proposed and not yet agreed**
+
+- Validate `--service` and `--env` with the manifest rules, and report "no record" for an unknown environment. Today a typo looks like a blank `STABLE` environment, so `recover` would return `NO_OP` with exit 0.
+- Handle SIGTERM the same way as SIGINT. CI cancels jobs with SIGTERM, which skips `finally` and leaves the lock behind.
+- Define a JSON error shape for exit 1, which has no `Outcome`, so `--output json` has something to print.
+- Use random run IDs. Lock release relies on them being unique, and a counter can't work because rejected runs never read state.
+
+**Phase 7, proposed and not yet agreed**
+
+- Make the `.pyz` reproducible or drop the claim in P7: two builds of the same code gave different hashes.
+- Pin `hatchling`, which `make build` currently resolves to the latest version.
+- Keep the version number in one place, or add a test that `pyproject.toml` and `__init__.py` agree.
+- Bump the CI actions for the Node 20 deprecation and pin them to commit SHAs.

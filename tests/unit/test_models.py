@@ -1,26 +1,12 @@
-from pathlib import Path
-
+from conftest import make_manifest
 from deployctl.errors import LockHeld, ManifestError
 from deployctl.models import (
     EXIT_FOR_OUTCOME,
     DeploymentResult,
     EnvironmentState,
     ExitCode,
-    Manifest,
     Outcome,
 )
-
-
-def make_manifest(change_id: str = "CHG-1042") -> Manifest:
-    return Manifest(
-        service="orders-api",
-        environment="staging",
-        version="1.5.0",
-        artifact_path=Path("orders-api-1.5.0.bin"),
-        artifact_sha256="a" * 64,
-        change_id=change_id,
-        requested_by="catalin",
-    )
 
 
 def test_every_outcome_has_an_exit_code() -> None:
@@ -56,7 +42,9 @@ def test_deployment_key_is_stable_for_identical_inputs() -> None:
 
 
 def test_deployment_key_changes_with_its_inputs() -> None:
-    assert make_manifest("CHG-1042").deployment_key != make_manifest("CHG-1043").deployment_key
+    first = make_manifest(change_id="CHG-1042")
+    second = make_manifest(change_id="CHG-1043")
+    assert first.deployment_key != second.deployment_key
 
 
 def test_state_defaults_are_not_shared_between_instances() -> None:

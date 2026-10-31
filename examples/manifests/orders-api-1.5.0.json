@@ -1,0 +1,19 @@
+{
+  "service": "orders-api",
+  "environment": "staging",
+  "version": "1.5.0",
+  "artifact": {
+    "path": "orders-api-1.5.0.bin",
+    "sha256": "b865d55eaa6bffa3dd8f008154383a2b7684fa6e2a7a15d78538a7d0e5dc98a7"
+  },
+  "change_id": "CHG-1042",
+  "requested_by": "catalin",
+  "health_check": {
+    "attempts": 5,
+    "required_consecutive": 3,
+    "interval_seconds": 0.1,
+    "timeout_seconds": 2,
+    "max_error_rate": 0.01,
+    "max_p99_latency_ms": 500
+  }
+}

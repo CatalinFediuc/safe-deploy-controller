@@ -1,0 +1,19 @@
+{
+  "service": "orders-api",
+  "environment": "staging",
+  "version": "1.4.2",
+  "artifact": {
+    "path": "../../etc/hosts",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "change_id": "CHG-1041",
+  "requested_by": "catalin",
+  "health_check": {
+    "attempts": 5,
+    "required_consecutive": 3,
+    "interval_seconds": 0.1,
+    "timeout_seconds": 2,
+    "max_error_rate": 0.01,
+    "max_p99_latency_ms": 500
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "deployctl: deploy 1.5.0 (rollback path)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "deployctl",
+      "args": ["deploy", "--manifest", "examples/manifests/orders-api-1.5.0.json",
+               "--artifact-dir", "examples/artifacts",
+               "--health-profile", "examples/health/default.json",
+               "--state-dir", ".debug-state"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "pytest: current file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "--no-cov", "-x", "-vv"],
+      "console": "integratedTerminal"
+    }
+  ]
+}

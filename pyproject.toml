@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "safe-deploy-controller"
+version = "0.1.0"
+description = "Local deployment controller with safety gates, health verification and automatic rollback"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []            # stdlib only at runtime, on purpose
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
+
+[project.scripts]
+deployctl = "deployctl.cli:main"     # console_scripts wrapper calls sys.exit(main())
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deployctl"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "PTH", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]        # assert is fine in tests
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --cov=deployctl --cov-branch --cov-report=term-missing --cov-fail-under=90"
+
+[tool.coverage.run]
+omit = ["*/__main__.py"]

@@ -234,6 +234,7 @@ def test_the_demo_sequence_ends_with_the_documented_exit_codes(
     assert deploy("orders-api-1.5.1") == ExitCode.OK
     assert deploy("invalid-schema") == ExitCode.REJECTED
     assert deploy("checksum-mismatch") == ExitCode.REJECTED
+    assert deploy("path-traversal") == ExitCode.REJECTED
     assert deploy("orders-api-1.6.0", profile=OUTAGE) == ExitCode.NEEDS_ATTENTION
     assert deploy("orders-api-1.5.1") == ExitCode.BLOCKED
     assert recover() == ExitCode.OK
@@ -247,7 +248,8 @@ def test_the_demo_sequence_ends_with_the_documented_exit_codes(
         "RECOVERED",
         "BLOCKED",
         "ROLLBACK_FAILED",
-        "REJECTED",  # the checksum mismatch; invalid-schema declares `qa`, so it is listed there
+        "REJECTED",  # path traversal
+        "REJECTED",  # checksum mismatch; invalid-schema declares `qa`, so it is listed there
         "SUCCEEDED",
         "BLOCKED",
         "ROLLED_BACK",

@@ -57,6 +57,7 @@ def test_every_step_of_the_demo_ends_as_the_makefile_says(demo: Demo) -> None:
     assert demo.deploy("orders-api-1.5.1").outcome is Outcome.SUCCEEDED
     assert demo.deploy("invalid-schema").outcome is Outcome.REJECTED
     assert demo.deploy("checksum-mismatch").outcome is Outcome.REJECTED
+    assert demo.deploy("path-traversal").outcome is Outcome.REJECTED
 
     outage = demo.deploy("orders-api-1.6.0", OUTAGE)
     assert outage.outcome is Outcome.ROLLBACK_FAILED

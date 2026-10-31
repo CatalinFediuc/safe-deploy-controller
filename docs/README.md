@@ -42,3 +42,46 @@ These gaps could have let a bad manifest through without an error, so validation
 - Health profiles in `examples/health/` belong to Phase 3.
 - `ManifestError` carries only the error list. Phase 4 needs it to carry the parsed service and environment, so rejected runs can be audited with them.
 - `make smoke` stays out of `make ci` until the `validate` command exists in Phase 5.
+
+## Phase 2: state, lock, audit, clock
+
+Delivered in [PR #2](https://github.com/CatalinFediuc/safe-deploy-controller/pull/2).
+
+### What we built
+
+- `clock.py`: the `Clock` protocol, `SystemClock`, and the one timestamp format used in state, audit and results.
+- `state.py`: `StateStore`, which saves the ledger atomically and refuses corrupt or unknown-schema files without overwriting them. It also holds `FileLock`, `break_lock()` and the `ALLOWED_TRANSITIONS` table.
+- `audit.py`: `AuditLog`, an append-only JSONL file with an fsync per event, and `Recorder`, which numbers a run's steps and builds its result.
+- `tests/conftest.py`: `FakeClock` and shared fixtures.
+
+Nothing calls these modules yet. The controller arrives in Phase 4.
+
+### Where we went beyond the plan
+
+The plan left these gaps, so we closed them:
+
+- **Two extra transitions:** the state diagram had no path for two things `recover` must do. `STABLE -> ROLLING_BACK` covers drift (T13), and `ROLLING_BACK -> ROLLING_BACK` covers a crash during rollback (T11). The diagram in the plan has not been updated.
+- **`Recorder.bind_from_version()`:** the skeleton's `in_flight()` and the result both need `from_version`, but the manifest can't say what is running. The controller sets it once state is read.
+
+These go further than the plan asked:
+
+- `state.json` must match the schema exactly. An unknown key counts as corrupt, because saving would silently drop it.
+- `schema_version` must be the integer `1`. `true` and `1.0` both compare equal to `1`, so they are refused explicitly.
+- The state directory is fsynced after each rename, so saved intent survives power loss.
+- A failed save removes its temporary file.
+- `release()` only removes a lock the run still owns. After a `--break-lock`, the file may belong to another run.
+- An empty or unreadable lockfile counts as held by `unknown`, so it blocks runs until someone breaks it.
+
+### How it was verified
+
+- `make ci` passed locally on Python 3.12, with 251 tests and 100% branch coverage.
+- GitHub CI passed on Python 3.11, 3.12 and 3.13.
+- We put 14 deliberate bugs into a throwaway copy, such as dropping `O_EXCL` or skipping an fsync. The tests caught all 14.
+- A concurrency test has 64 attempts race for the lock and checks that exactly one wins.
+
+### Left for later phases
+
+- `in_flight.to_version` must be a string, but a drift `recover` with no last known-good version has no target to record. Phase 4 needs to decide what goes there.
+- `Recorder.bind()` only accepts a full `Manifest`. Rejected runs and `recover` both need to bind partial identity in Phase 4.
+- A hard kill during an append can leave a partial last line in `audit.jsonl`. The `history` reader in Phase 5 should tolerate this.
+- `seq` restarts for each run, as in the plan's examples, so `history` must group events by `run_id`.

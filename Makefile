@@ -47,10 +47,7 @@ build: install ## wheel + sdist + single-file zipapp into dist/
 	$(MAKE) zipapp
 
 zipapp:
-	mkdir -p build/zipapp dist
-	cp -R src/deployctl build/zipapp/
-	find build/zipapp -name '__pycache__' -prune -exec rm -rf {} +
-	$(PY) -m zipapp build/zipapp -m 'deployctl.cli:run' -p '/usr/bin/env python3' -c -o dist/deployctl.pyz
+	$(PY) scripts/build_zipapp.py
 
 smoke: build ## run the built artifact, including exit-code propagation
 	$(PYTHON) dist/deployctl.pyz --version

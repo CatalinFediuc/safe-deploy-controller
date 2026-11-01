@@ -28,6 +28,148 @@ deployctl status --service orders-api --env staging
 deployctl history --service orders-api --env staging
 ```
 
+## Problem and assumptions
+
+The job is to change a running service safely: refuse bad input, stop when a release is unhealthy, put the previous version back without being asked, and leave a record that an auditor could follow. Retrying must always be safe.
+
+The design assumes:
+
+- **Simulated target.** `environment.json` stands in for the real system, and health results come from a fixture file. Both sit behind interfaces, so real adapters can replace them.
+- **One controller host.** The lock is a local file, and the ledger and audit log are local files.
+- **JSON manifests with strict semver.** Pre-release tags aren't supported.
+- **Known-good is per environment.** A version proven in `staging` means nothing for `prod`.
+- **A version means one artifact.** Artifacts are identified by sha256, so a rebuild needs a new version number.
+- **One lock per state directory.** Unrelated deploys wait for each other. That's a simplification, not a requirement.
+
+## Design
+
+```mermaid
+flowchart LR
+    CLI[cli.py<br/>argparse, exit codes] --> C[controller.py<br/>pipeline + rollback + recover]
+    C --> M[manifest.py<br/>parse + validate + sha256]
+    C --> S[(state.py<br/>StateStore + FileLock)]
+    C --> A[(audit.py<br/>JSONL audit + Recorder)]
+    C --> T[[target.py<br/>DeploymentTarget port]]
+    C --> H[[health.py<br/>HealthProbe port + verify]]
+    C --> K[[clock.py<br/>Clock port]]
+    T -.sim.-> TF[(environment.json)]
+    H -.sim.-> HF[(health profile fixture)]
+    CLI --> R[render.py<br/>text / JSON]
+```
+
+### One deploy
+
+```mermaid
+flowchart LR
+    V[validate] -->|ok| P[preflight]
+    V -->|invalid| REJ([REJECTED<br/>exit 3, nothing changed])
+    P -->|gate refuses| BLK([BLOCKED<br/>exit 6, nothing changed])
+    P -->|already active| NOOP([NO_OP<br/>exit 0])
+    P -->|ok| D[deploy]
+    D -->|ok| VE[verify]
+    D -->|apply error| RB[rollback]
+    VE -->|healthy| CO([complete: SUCCEEDED<br/>exit 0])
+    VE -->|unhealthy| RB
+    RB --> VR[verify_rollback]
+    VR -->|healthy| RBK([ROLLED_BACK<br/>exit 4])
+    VR -->|unhealthy / apply error| NA([ROLLBACK_FAILED<br/>NEEDS_ATTENTION, exit 5])
+```
+
+### Environment status
+
+Each `service/environment` has a status in the ledger. The status is saved before the target is touched, so an interrupted run is always visible. Any transition not shown here is refused as a bug.
+
+```mermaid
+stateDiagram-v2
+    [*] --> STABLE
+    STABLE --> DEPLOYING: deploy (intent saved first)
+    DEPLOYING --> VERIFYING: apply ok
+    DEPLOYING --> ROLLING_BACK: apply failed
+    VERIFYING --> STABLE: healthy (new known-good)
+    VERIFYING --> ROLLING_BACK: unhealthy
+    ROLLING_BACK --> STABLE: rollback verified
+    ROLLING_BACK --> NEEDS_ATTENTION: rollback failed
+    DEPLOYING --> ROLLING_BACK: recover (after crash)
+    VERIFYING --> ROLLING_BACK: recover (after crash)
+    ROLLING_BACK --> ROLLING_BACK: recover (crash mid-rollback)
+    STABLE --> ROLLING_BACK: recover (drift)
+    NEEDS_ATTENTION --> ROLLING_BACK: recover
+```
+
+### Principles
+
+| # | Principle | What it means here |
+|---|---|---|
+| P1 | Fail closed | An invalid manifest changes nothing. Missing health data counts as unhealthy. Unknown state blocks and asks a human. |
+| P2 | Write-ahead state | Intent is saved before the target is touched, so any interruption can be seen and recovered. |
+| P3 | Idempotent by construction | Re-running a finished deployment is a `NO_OP`. Re-running a failed version is `BLOCKED` unless overridden. |
+| P4 | Few terminal states | Every run ends `STABLE` at a known version, or `NEEDS_ATTENTION`. An interrupted run stays in an explicit in-flight state until `recover`. |
+| P5 | Automation knows when to stop | One automatic rollback. If that fails verification, it stops and asks for a human. |
+| P6 | Ports and adapters | The target, health probe and clock are interfaces, so tests are fast and offline. |
+| P7 | No runtime dependencies | Standard library only. The wheel, sdist and `.pyz` are the same bytes on every build of the same source. |
+
+### Two sources of truth
+
+`state.json` is the ledger: what the controller believes and intends. `environment.json` is the target: what is actually running. Preflight compares them, and a mismatch is **drift**, which blocks deploys until `recover` reconciles it. Keeping them apart is what lets the controller notice a change made behind its back.
+
+## Usage
+
+```text
+deployctl --version
+deployctl validate --manifest PATH --artifact-dir DIR
+deployctl deploy   --manifest PATH --artifact-dir DIR --health-profile PATH
+                   [--dry-run] [--allow-known-bad] [--allow-downgrade]
+deployctl status   --service NAME --env ENV
+deployctl recover  --service NAME --env ENV --reason TEXT --health-profile PATH
+                   [--break-lock] [--actor NAME]
+deployctl history  --service NAME --env ENV [--limit N]
+```
+
+Every command takes `--output {text,json}`. All but `validate` take `--state-dir DIR`, which defaults to `.deployctl` or `$DEPLOYCTL_STATE_DIR`.
+
+- `validate` needs no state and writes nothing, so it can run in CI on every manifest change.
+- `deploy` has no default health source. Without `--health-profile` it stops, rather than assume the release is healthy.
+- `recover` needs a `--reason`, which goes in the audit log. `--actor` defaults to `$USER`.
+- `status` exits 0 whenever it can report, including for `NEEDS_ATTENTION` and drift, so scripts should read its JSON.
+
+[examples/manifests/orders-api-1.4.2.json](examples/manifests/orders-api-1.4.2.json) shows every manifest field, and [section 5.1 of the plan](docs/IMPLEMENTATION_PLAN.md#51-deployment-manifest-json) lists the validation rules.
+
+### Exit codes
+
+| Outcome | Exit | Meaning | Environment after |
+|---|---|---|---|
+| `SUCCEEDED` | 0 | New version verified and marked known-good | `STABLE` at the new version |
+| `NO_OP` | 0 | Version already active, or `--dry-run` | unchanged |
+| `RECOVERED` | 0 | `recover` restored the last known-good version | `STABLE` at known-good |
+| `VALID` | 0 | `validate` found no problems | unchanged |
+| none | 1 | Internal error or corrupt state | unchanged or explicit in-flight |
+| none | 2 | Usage error, including a missing or bad `--health-profile` | unchanged |
+| `REJECTED` | 3 | Manifest invalid, nothing touched | unchanged |
+| `ROLLED_BACK` | 4 | Change failed, previous version restored and verified | `STABLE` at known-good |
+| `ROLLBACK_FAILED` | 5 | Rollback failed. **Page a human**, then run `recover` | `NEEDS_ATTENTION` |
+| `BLOCKED` | 6 | A preflight gate refused, or there is no ledger record for `recover` or `status` | unchanged |
+| `INTERRUPTED` | 130 | SIGINT, SIGTERM or SIGHUP during a run | explicit in-flight |
+
+Separate codes let a pipeline tell bad input from a bad release that's already mitigated, and both from a failure that needs a person now.
+
+### What happens on a retry
+
+| Situation when `deploy` runs | Behavior | Exit |
+|---|---|---|
+| Same version and artifact already active | `NO_OP`, audited, target not touched | 0 |
+| Same version active with a different artifact | `BLOCKED`: release a new version | 6 |
+| `STABLE` at another version | Normal pipeline | 0, 4 or 5 |
+| Version previously failed verification here | `BLOCKED`. A successful `--allow-known-bad` deploy clears the mark | 6 |
+| An earlier run crashed or was interrupted | `BLOCKED`: run `recover` | 6 |
+| `NEEDS_ATTENTION` | `BLOCKED` until `recover` succeeds | 6 |
+| Lock held by another run | `BLOCKED` with the owner and run ID. The lock isn't taken over | 6 |
+| Drift between ledger and target | `BLOCKED`: run `recover` | 6 |
+| Version lower than the active one | `BLOCKED` unless `--allow-downgrade` | 6 |
+
+`recover` is safe to repeat too. With nothing to fix it's a `NO_OP`. With no ledger record it's `BLOCKED` and touches nothing, because an empty ledger, from a wrong `--state-dir` for example, says nothing about what's running.
+
+When a rollback also fails, the cause is often the environment, such as a dependency outage, rather than the release. The failed version is still marked known-bad, so after investigating, `--allow-known-bad` may be the right way to deploy it again.
+
 ## Example output
 
 `make demo` runs each of these against the same environment, in order. All the files are in [examples/](examples/).
@@ -281,3 +423,119 @@ deployctl deploy --manifest examples/manifests/orders-api-1.5.0.json \
   "exit_code": 4
 }
 ```
+
+## Testing
+
+```bash
+make test    # all tests, with a 90% branch coverage gate
+make lint    # format check, ruff, and mypy in strict mode
+```
+
+There are 577 tests, at 100% branch coverage. They use a fake clock, so they don't really sleep, apart from the tests that run real processes.
+
+| Requirement | Tests |
+|---|---|
+| Successful deployment | [tests/scenarios/test_deploy_success.py](tests/scenarios/test_deploy_success.py) |
+| Invalid input, proving state and target stay byte-identical | [tests/scenarios/test_invalid_input.py](tests/scenarios/test_invalid_input.py), [tests/unit/test_manifest.py](tests/unit/test_manifest.py) |
+| Failed health check and rollback | [tests/scenarios/test_failed_health.py](tests/scenarios/test_failed_health.py), [tests/unit/test_health.py](tests/unit/test_health.py) |
+| Repeated execution | [tests/scenarios/test_repeated_execution.py](tests/scenarios/test_repeated_execution.py) |
+| Crashes and `recover` | [tests/scenarios/test_crash_recovery.py](tests/scenarios/test_crash_recovery.py) |
+| Locking | [tests/scenarios/test_locking.py](tests/scenarios/test_locking.py) |
+| Full demo sequence | [tests/scenarios/test_demo_sequence.py](tests/scenarios/test_demo_sequence.py) |
+| CLI, JSON contract, and stop signals sent to a real process | [tests/cli/test_cli.py](tests/cli/test_cli.py) |
+| The built `.pyz`: exit codes, stdlib only, same bytes each build | [tests/cli/test_zipapp_smoke.py](tests/cli/test_zipapp_smoke.py) |
+
+The crash tests matter most. They stop a run at each dangerous point (after intent is saved, after `apply`, mid-verify, mid-rollback) with an exception that gets past `except Exception`, as a hard kill would. Each time the ledger must show an explicit in-flight state, `deploy` must refuse, and `recover` must bring the environment back to `STABLE` with the running, active and known-good versions agreeing. That is the evidence for the claim that a crash can't leave the environment ambiguous.
+
+Coverage alone wasn't trusted. In most phases, deliberate bugs were injected into a throwaway copy to confirm that the tests fail when the code is wrong. [AI_PROCESS.md](AI_PROCESS.md) has the results.
+
+## Build and packaging
+
+```bash
+make ci             # lint, test, build and smoke test: what CI runs
+make build          # wheel, sdist and .pyz into dist/
+make dist-tarball   # ../safe-deploy-controller.tar.gz, from HEAD
+```
+
+`make build` writes three artifacts to `dist/`:
+
+| Artifact | How to run it |
+|---|---|
+| `deployctl.pyz` | `python3 dist/deployctl.pyz --version`. One file, Python 3.11 or newer, nothing to install |
+| `safe_deploy_controller-*.whl` | `pip install` it, then run `deployctl` |
+| `safe_deploy_controller-*.tar.gz` | The sdist, for building from source |
+
+The same source gives byte-identical artifacts. Hatchling takes care of the wheel and sdist, and [scripts/build_zipapp.py](scripts/build_zipapp.py) takes care of the `.pyz`, with fixed timestamps and sorted entries. Its entries are stored rather than compressed, so the bytes don't depend on Python's zlib.
+
+Dev tools are pinned in `requirements-dev.txt`, which `make lock` regenerates. `hatchling` is pinned in `pyproject.toml`. The version number lives only in [src/deployctl/\_\_init\_\_.py](src/deployctl/__init__.py).
+
+## CI/CD and production controls
+
+**Built today.** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `make ci` on Python 3.11, 3.12 and 3.13 for every pull request and every push to `main`, then keeps the `dist/` from Python 3.12. The token is read-only, and actions are pinned to commit SHAs.
+
+Inside `deployctl`, these controls also exist already: a `change_id` on every manifest, sha256 checks before anything changes, a known-bad gate, a downgrade gate, automated health gates with automatic rollback, fail-closed handling of missing metrics, and an append-only audit log.
+
+**Everything below is proposed.** None of it is built. It's what a real rollout would add around this controller.
+
+- **CI pipeline.** After the steps above: sign the artifact with Sigstore or cosign, generate an SBOM, attach SLSA provenance, and publish an immutable artifact by digest. Run `deployctl validate` on every manifest pull request.
+- **Approvals.** Link every change to a change record. Require a `prod` approver who isn't the requester, record approvals in the audit trail, and enforce this with CI/CD environment protection rules.
+- **Change windows.** Enforce a freeze calendar as a preflight gate. An emergency override needs an incident ID, and is audited and alerted on.
+- **Progressive delivery.** Go canary 1%, 10%, 50%, 100% with bake time and automated analysis at each step, or blue/green with an instant traffic switch. Use feature flags to separate deploy from release. Promote dev, then staging, then prod, requiring the version to be proven in the previous environment.
+- **Observability gates.** Compare canary against baseline on error rate, p99 latency and saturation. Add an SLO burn-rate check and synthetic checks. Require enough traffic for a meaningful decision, treat missing metrics as failure, annotate dashboards with deploy events, and roll back on burn.
+- **Access controls.** Least privilege, a deployer identity from short-lived OIDC credentials rather than long-lived secrets, separation of duties, signatures verified before `apply`, and the audit log shipped to tamper-evident storage.
+- **Making the controller itself production-grade.** Replace the lockfile with a distributed lease and fencing token (etcd, Consul or DynamoDB conditional writes). Move state to a durable store with optimistic concurrency. Add real adapters behind the existing `DeploymentTarget` and `HealthProbe` ports, such as Kubernetes or Argo CD and Prometheus or Datadog. Send `NEEDS_ATTENTION` to chat or paging, and publish metrics on deploy outcomes, such as change failure rate and time to restore.
+
+## Known limitations
+
+- **Simulated only.** There are no real `DeploymentTarget` or `HealthProbe` adapters and no real artifact store.
+- **Single host.** The lockfile doesn't work across hosts, and the ledger and audit log are local files.
+- **Global lock.** It's held through the rollout wait, for up to twice `rollout_timeout_seconds` when a deploy also rolls back.
+- **Actor.** A deploy's `actor` is the manifest's self-declared `requested_by`, not who ran it.
+- **Thresholds.** Rollback verification reuses the new manifest's thresholds, and `recover` after drift uses the defaults.
+- **Versions.** There's no pre-release semver.
+- **After a crash.** A run can't resume from its last stage. `recover` rolls back instead.
+- **No traffic.** A service with no traffic can produce NaN, fail verification and be marked known-bad.
+- **Lost `state.json`.** `recover` can't fix this, because it refuses an environment with no record. The file must be restored by hand.
+- **Corrupt `environment.json`.** This blocks every environment until it's repaired by hand, as described below.
+- **Refused bad profiles.** A deploy refused for a bad health profile exits 2 and leaves no audit record.
+- **Build inputs.** `hatchling`'s own dependencies aren't pinned. The action SHAs are updated by hand.
+
+### Repairing a corrupt `environment.json`
+
+The controller refuses a corrupt `environment.json`: `deploy`, `status` and `recover` all exit 1 and leave the file alone. Treating it as empty could erase other environments' records, and rebuilding it from the ledger would defeat drift detection. So a person has to repair it.
+
+1. Copy the file aside and inspect it.
+2. Repair it if the correct content is clear. It maps each `service/environment` to its running version:
+
+   ```json
+   {
+     "orders-api/staging": {
+       "running_version": "1.5.1",
+       "updated_at": "2026-11-01T17:49:02.191Z"
+     }
+   }
+   ```
+
+   Otherwise delete it. Deleting affects every environment: each one then reads as nothing running, which is drift, so each needs its own `recover`.
+3. Run `recover` for each affected environment:
+
+   ```bash
+   deployctl recover --service NAME --env ENV --reason TEXT --health-profile PATH
+   ```
+
+   The hand edit itself isn't audited, so `--reason` should say what was changed.
+
+If the repaired file matches the ledger, `recover` is a `NO_OP` that still records the reason. If not, it restores the last known-good version and verifies it, using the default health thresholds, because drift has no failed deploy to take them from.
+
+## Time spent
+
+Working time wasn't tracked directly. Commit and PR timestamps give an upper bound of about 8 hours elapsed, including breaks, against the roughly 2 hours the exercise suggests. The extra time went on the optional safety work, on reviewing each phase, and on bug-injection checks. [docs/ai-log.md](docs/ai-log.md) has the breakdown.
+
+With another day, the next work would be, in order:
+
+1. Real `DeploymentTarget` and `HealthProbe` adapters.
+2. A lock that works across hosts, and durable state.
+3. A separate "inconclusive" verification result, so that a service with no traffic isn't marked known-bad.
+4. An audited way to repair a corrupt `environment.json`, in place of the hand repair.
+5. Audit records for deploys refused by a bad health profile.
+6. The stretch items: promotion gates between environments, a change-window policy, two-person approval for `prod`, and canary steps.

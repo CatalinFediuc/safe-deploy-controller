@@ -28,10 +28,10 @@ Phases 0 to 6 were on 2026-10-31 and Phase 7 on 2026-11-01, local time (UTC+2). 
 | **Total to end of Phase 4** | 07:19 to 11:56 | **4h 37m** |
 | Phase 5 review and build | 12:01 to 14:25 | 2h 24m |
 | Phase 6 | 14:36 to 14:52 | 16m |
-| Phase 7 | 19:40 to 20:20 | about 40m |
-| **Total** | | **about 8h 13m** |
+| Phase 7 | about 19:40 to 20:00 | about 20m |
+| **Total** | | **about 7h 53m** |
 
-The 07:19 start is the repository directory's creation time. Git can't separate Phases 0 and 1.
+The 07:19 start is the repository directory's creation time, and Phase 7's start is an estimate from its first local build. Git can't separate Phases 0 and 1.
 
 ## Log
 
@@ -124,7 +124,7 @@ The prompts for these phases were not logged, and the user confirmed that no AI 
 - **Claude found:** fixing the `.pyz` needed more than fixing file times, because `python -m zipapp` stamps its generated `__main__.py` with the current time. Deflated bytes also depend on Python's zlib, so entries are stored.
 - **Left out on purpose:** the plan's sample line "read every generated line", because the log doesn't record it and only the user can say it.
 - **Claude's mistake:** its first check of the repair steps stored a command in a variable, the same zsh slip logged in Phase 6. All of those commands failed, so it reran them with a function.
-- **Verification:** of 10 injected bugs in the build script, 3 survived. One showed that `zipfile.ZIP_STORED` was an argument with no effect, now removed. The other two changed no behavior in the copy tested. The repair steps were run for all three cases: a corrupt file, a deleted file and a hand-repaired file.
+- **Verification:** of 10 injected bugs in the build script, 3 survived. One showed that `zipfile.ZIP_STORED` was an argument with no effect, now removed. The other two changed no behavior in the copy tested. The repair steps were run for all three cases: a corrupt file, a deleted file and a hand-repaired file. GitHub's Linux artifacts were compared with the macOS build and matched byte for byte.
 
 ## Useful for `AI_PROCESS.md`
 

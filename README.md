@@ -465,7 +465,7 @@ make dist-tarball   # ../safe-deploy-controller.tar.gz, from HEAD
 | `safe_deploy_controller-*.whl` | `pip install` it, then run `deployctl` |
 | `safe_deploy_controller-*.tar.gz` | The sdist, for building from source |
 
-The same source gives byte-identical artifacts. Hatchling takes care of the wheel and sdist, and [scripts/build_zipapp.py](scripts/build_zipapp.py) takes care of the `.pyz`, with fixed timestamps and sorted entries. Its entries are stored rather than compressed, so the bytes don't depend on Python's zlib.
+The same source gives byte-identical artifacts, and builds on macOS and on GitHub's Linux runner were compared and matched. Hatchling takes care of the wheel and sdist, and [scripts/build_zipapp.py](scripts/build_zipapp.py) takes care of the `.pyz`, with fixed timestamps and sorted entries. Its entries are stored rather than compressed, so the bytes don't depend on Python's zlib.
 
 Dev tools are pinned in `requirements-dev.txt`, which `make lock` regenerates. `hatchling` is pinned in `pyproject.toml`. The version number lives only in [src/deployctl/\_\_init\_\_.py](src/deployctl/__init__.py).
 

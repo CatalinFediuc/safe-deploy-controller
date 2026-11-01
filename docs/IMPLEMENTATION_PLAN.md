@@ -1131,17 +1131,17 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
 
 ## 15. Definition of done (submission checklist)
 
-- [ ] `make ci` passes from a clean clone (fresh venv), and CI is green
+- [x] `make ci` passes from a clean clone (fresh venv), and CI is green
 - [x] `make demo` output pasted in README (text + one JSON result)
-- [ ] Tests cover success, invalid input, failed health, repeated execution, crash recovery; coverage ≥ 90%
-- [ ] `dist/` contains wheel, sdist, `deployctl.pyz`; smoke test proves exit codes propagate
-- [ ] README: interpretation, design, assumptions, setup, usage, exit codes, example output, tests, production controls, limitations
-- [ ] README: repair steps for a corrupt `environment.json` (12.1)
-- [ ] `AI_PROCESS.md` complete (tools, prompts, accepted/changed/rejected, verification, risks)
-- [ ] Time spent + "what I'd do with another day" noted
+- [x] Tests cover success, invalid input, failed health, repeated execution, crash recovery; coverage ≥ 90%
+- [x] `dist/` contains wheel, sdist, `deployctl.pyz`; smoke test proves exit codes propagate
+- [x] README: interpretation, design, assumptions, setup, usage, exit codes, example output, tests, production controls, limitations
+- [x] README: repair steps for a corrupt `environment.json` (12.1)
+- [x] `AI_PROCESS.md` complete (tools, prompts, accepted/changed/rejected, verification, risks)
+- [x] Time spent + "what I'd do with another day" noted
 - [ ] No credentials, customer data, or internal names; example service names are generic
-- [ ] Meaningful commit history (one or more commits per phase)
-- [ ] `make dist-tarball` produces the submission archive (if not sharing a private repo)
+- [x] Meaningful commit history (one or more commits per phase)
+- [x] `make dist-tarball` produces the submission archive (if not sharing a private repo)
 
 ---
 
@@ -1161,7 +1161,7 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 4. Controller | Done | [PR #8](https://github.com/CatalinFediuc/safe-deploy-controller/pull/8) |
 | 5. CLI + rendering | Done | [PR #9](https://github.com/CatalinFediuc/safe-deploy-controller/pull/9) |
 | 6. Demo + examples | Done | [PR #11](https://github.com/CatalinFediuc/safe-deploy-controller/pull/11) |
-| 7. Package, CI, docs | Done | branch `feat/phase-7-package-ci-docs` |
+| 7. Package, CI, docs | Done | [PR #12](https://github.com/CatalinFediuc/safe-deploy-controller/pull/12) |
 
 ### 16.2 Changes from the original plan
 
@@ -1226,6 +1226,7 @@ Start here when picking the work back up. Open items in 16.3 are work to do, and
 
 - [ ] A working demo now exists, which was the condition for looking again at real adapters, a lock across hosts, durable state and hand-restoring a lost `state.json`. Reopen them, or keep them as limitations?
 - [ ] Accept as built: `.pyz` entries are stored uncompressed, so it's 78 KB instead of 26 KB (14).
+- [ ] Line 4 of this plan names the exercise's source, and the example manifests use `catalin` as `requested_by`. No credentials or customer data were found. Do either of these count as internal names under section 15? That box stays unticked until this is decided.
 - [ ] Accept as built: only `hatchling` itself is pinned. Its dependencies still float, because `python -m build` installs them in an isolated environment.
 
 **Deferred on purpose (2026-10-31)**

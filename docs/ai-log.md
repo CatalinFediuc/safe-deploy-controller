@@ -6,14 +6,14 @@ Running notes for `AI_PROCESS.md` and the time note (see section 12.2 of [IMPLEM
 
 | Used for | Tool | Model |
 |---|---|---|
-| Implementation plan | AI-generated; tool to be confirmed | to be confirmed |
+| Implementation plan | Claude Cowork | not recorded |
+| Phase 0 scaffold | none, done by hand | none |
 | Code, tests and docs, from Phase 1 | Claude Code in VS Code | Claude Opus 5.5 |
 
-Phase 0 commits carry no AI attribution, so whether AI helped there is still to be confirmed.
 
 ## Time
 
-All on 2026-10-31, local time (UTC+2). These windows come from commit and PR timestamps. They show elapsed time, including any breaks, so treat them as upper bounds and correct them if you tracked the real time.
+Phases 0 to 6 were on 2026-10-31 and Phase 7 on 2026-11-01, local time (UTC+2). These windows come from commit and PR timestamps. They show elapsed time, including any breaks, so treat them as upper bounds and correct them if you tracked the real time.
 
 | Work | Window | Elapsed |
 |---|---|---|
@@ -28,15 +28,16 @@ All on 2026-10-31, local time (UTC+2). These windows come from commit and PR tim
 | **Total to end of Phase 4** | 07:19 to 11:56 | **4h 37m** |
 | Phase 5 review and build | 12:01 to 14:25 | 2h 24m |
 | Phase 6 | 14:36 to 14:52 | 16m |
-| **Total so far** | 07:19 to 14:52 | **7h 33m** |
+| Phase 7 | about 19:40 to 20:00 | about 20m |
+| **Total** | | **about 7h 53m** |
 
-The 07:19 start is the repository directory's creation time. Git can't separate Phases 0 and 1.
+The 07:19 start is the repository directory's creation time, and Phase 7's start is an estimate from its first local build. Git can't separate Phases 0 and 1.
 
 ## Log
 
 ### Phases 0 and 1
 
-The prompts for these phases were not logged. Add what you remember. The accepted and rejected decisions below come from [README.md](README.md).
+The prompts for these phases were not logged, and the user confirmed that no AI was used for Phase 0. The accepted and rejected decisions below come from [README.md](README.md).
 
 - **Accepted beyond the plan:** stricter validation, including nested unknown keys, duplicate JSON keys, booleans used as integers and unsafe symlinks.
 - **Fixed after tests failed:** a misleading cross-field error for an out-of-range `attempts`.
@@ -115,6 +116,15 @@ The prompts for these phases were not logged. Add what you remember. The accepte
 - **Claude checked before pasting:** reading the demo output as a published document, rather than as passing checks, found a Python `None` in the first step and the OS username in the last. The demo's test had passed with both, because it only checks outcomes.
 - **Claude's mistake:** a snippet it gave the user in Phase 5 stored flags in `$A`, which zsh doesn't split, so `deploy` failed with a usage error. That's the likely cause of the "no record" the user then reported, and Claude's first answer to that question gave other causes. It noticed when the same pattern failed in its own command, and told the user.
 - **Verification:** the README's commands were run as written in zsh, and its quick start from a clean copy.
+
+### Phase 7: package, CI, docs
+
+- **Asked:** start Phase 7 from the documents in `docs/`.
+- **Decided by the user:** all four proposed items, the plan's author tool, no AI in Phase 0, the elapsed windows for the time note, and a PR as in earlier phases, asked in one batch before any changes.
+- **Claude found:** fixing the `.pyz` needed more than fixing file times, because `python -m zipapp` stamps its generated `__main__.py` with the current time. Deflated bytes also depend on Python's zlib, so entries are stored.
+- **Left out on purpose:** the plan's sample line "read every generated line", because the log doesn't record it and only the user can say it.
+- **Claude's mistake:** its first check of the repair steps stored a command in a variable, the same zsh slip logged in Phase 6. All of those commands failed, so it reran them with a function.
+- **Verification:** of 10 injected bugs in the build script, 3 survived. One showed that `zipfile.ZIP_STORED` was an argument with no effect, now removed. The other two changed no behavior in the copy tested. The repair steps were run for all three cases: a corrupt file, a deleted file and a hand-repaired file. GitHub's Linux artifacts were compared with the macOS build and matched byte for byte.
 
 ## Useful for `AI_PROCESS.md`
 

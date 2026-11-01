@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "safe-deploy-controller"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local deployment controller with safety gates, health verification and automatic rollback"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,9 @@ dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
 
 [project.scripts]
 deployctl = "deployctl.cli:main"     # console_scripts wrapper calls sys.exit(main())
+
+[tool.hatch.version]
+path = "src/deployctl/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/deployctl"]

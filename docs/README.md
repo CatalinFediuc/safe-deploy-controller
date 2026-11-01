@@ -318,3 +318,43 @@ Delivered in [PR #11](https://github.com/CatalinFediuc/safe-deploy-controller/pu
 - Phase 7 completes the README, including the repair steps for a corrupt `environment.json`, and adds `AI_PROCESS.md` and `test_zipapp_smoke`.
 
 [Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.
+
+## Phase 7: package, CI, docs
+
+Delivered in [PR #12](https://github.com/CatalinFediuc/safe-deploy-controller/pull/12).
+
+### What we built
+
+- `README.md` now covers the whole outline in section 12.1 of the plan: assumptions, design, usage, testing, packaging, production controls, limitations, the repair steps and the time note.
+- `AI_PROCESS.md`, written from [ai-log.md](ai-log.md).
+- `scripts/build_zipapp.py`: builds a `.pyz` with the same bytes every time.
+- `tests/cli/test_zipapp_smoke.py`: exit codes propagate from the built file, it runs with only the stdlib, and two builds match.
+- `hatchling` is pinned, the version lives only in `__init__.py`, and the CI actions are on v7, pinned to commit SHAs.
+
+### Behavior to know about
+
+- The `.pyz` is now 78 KB rather than 26 KB, because its entries are stored uncompressed.
+- `make zipapp` no longer uses `build/zipapp/`.
+- `README.md` is the wheel's long description, so editing it changes the wheel's hash.
+- After a corrupt `environment.json` is repaired so that it matches the ledger, `recover` is a `NO_OP`, and the `--reason` is still audited.
+- The README's production controls are split into what is built and what is only proposed.
+
+### Problems along the way
+
+- **Fixing file times wasn't enough:** `python -m zipapp` stamps its generated `__main__.py` with the current time, so it had to be replaced.
+- **zsh again:** the first run of the repair steps stored a command in a variable and every line failed. It was rerun with a function.
+
+### How it was verified
+
+- `make ci` passed locally on Python 3.12 and from a clean clone with a fresh virtual environment, with 577 tests and 100% branch coverage. GitHub CI passed on Python 3.11, 3.12 and 3.13, on the new action versions.
+- The wheel, sdist and `.pyz` from GitHub's Linux runner matched the ones built on macOS, byte for byte. A `.pyz` built with Python 3.11 matched one built with 3.12.
+- The wheel was installed in a clean virtual environment, and its `deployctl` ran and returned exit 3 on a bad manifest.
+- `make demo` from the clean clone exited as expected at all 11 steps, and `make dist-tarball` produced the archive.
+- We injected 10 bugs into the build script. 7 were caught. Of the 3 survivors, one showed that `zipfile.ZIP_STORED` was an argument with no effect, now removed, and two changed no behavior in the copy tested.
+- The repair steps were run against the finished `recover` for a corrupt file, a deleted file and a hand-repaired file.
+
+### Left for later phases
+
+Nothing is required. Section 16.4 of the plan has four items waiting for review.
+
+[Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.

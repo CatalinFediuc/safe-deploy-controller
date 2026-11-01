@@ -318,3 +318,38 @@ Delivered in [PR #11](https://github.com/CatalinFediuc/safe-deploy-controller/pu
 - Phase 7 completes the README, including the repair steps for a corrupt `environment.json`, and adds `AI_PROCESS.md` and `test_zipapp_smoke`.
 
 [Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.
+
+## Phase 7: package, CI, docs
+
+Delivered on branch `feat/phase-7-package-ci-docs`.
+
+### What we built
+
+- `README.md` now covers the whole outline in section 12.1 of the plan: assumptions, design, usage, testing, packaging, production controls, limitations, the repair steps and the time note.
+- `AI_PROCESS.md`, written from [ai-log.md](ai-log.md).
+- `scripts/build_zipapp.py`: builds a `.pyz` with the same bytes every time.
+- `tests/cli/test_zipapp_smoke.py`: exit codes propagate from the built file, it runs with only the stdlib, and two builds match.
+- `hatchling` is pinned, the version lives only in `__init__.py`, and the CI actions are on v7, pinned to commit SHAs.
+
+### Behavior to know about
+
+- The `.pyz` is now 78 KB rather than 26 KB, because its entries are stored uncompressed.
+- `make zipapp` no longer uses `build/zipapp/`.
+- `README.md` is the wheel's long description, so editing it changes the wheel's hash.
+- After a corrupt `environment.json` is repaired so that it matches the ledger, `recover` is a `NO_OP`, and the `--reason` is still audited.
+- The README's production controls are split into what is built and what is only proposed.
+
+### Problems along the way
+
+- **Fixing file times wasn't enough:** `python -m zipapp` stamps its generated `__main__.py` with the current time, so it had to be replaced.
+- **zsh again:** the first run of the repair steps stored a command in a variable and every line failed. It was rerun with a function.
+
+### How it was verified
+
+- `make ci` passed locally on Python 3.12, with 577 tests and 100% branch coverage.
+
+### Left for later phases
+
+Nothing is required. Section 16.4 of the plan has three items waiting for review.
+
+[Section 16 of the plan](IMPLEMENTATION_PLAN.md#16-progress-and-changes-since-the-original-plan) tracks these and the other open items.

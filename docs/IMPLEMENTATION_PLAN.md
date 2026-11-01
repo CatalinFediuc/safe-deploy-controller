@@ -50,7 +50,7 @@ git add -A && git commit -m "chore: scaffold project with build/test tooling"
 | P4 | **Small set of terminal states** | Every run ends with the environment `STABLE` (at a known version) or `NEEDS_ATTENTION` (human required). Never "unknown". |
 | P5 | **Automation knows when to stop** | One automatic rollback attempt. If the rollback also fails verification, stop and page; do not flap. |
 | P6 | **Ports and adapters** | Health probe, deployment target, state store, and clock are interfaces. Simulated now, real later; tests are fast and offline. |
-| P7 | **Zero runtime dependencies** | Stdlib only (argparse, json, dataclasses, hashlib). Wheel and single-file `.pyz` are trivially reproducible. |
+| P7 | **Zero runtime dependencies** | Stdlib only (argparse, json, dataclasses, hashlib). The wheel, sdist and single-file `.pyz` are byte-identical across builds of the same source. |
 
 ---
 
@@ -389,7 +389,7 @@ Options shared through argparse parent parsers:
 - A blank `--reason`, or no `--actor` with `$USER` unset, exits 2: the audit needs both.
 - `status` takes no lock. It shows the ledger entry, the running version and a `drift` flag, which is true when the environment is `STABLE` and the running version differs from the recorded one. It exits 0 whenever it can report, including for `NEEDS_ATTENTION`, so scripts read the JSON. With no ledger record it reports "no record" and exits 6.
 - `history` groups events by `run_id`, newest run first, and `--limit` counts runs (default 20). Each run shows its outcome, or that none was recorded; JSON output also has its events and `skipped_lines`. Events are found by service and environment, so a rejected manifest that was too broken to name them can't be listed.
-- `cli.main(argv) -> int` is what tests call. `cli.run()` does `sys.exit(main())` and is used by `__main__.py` and the zipapp. **Gotcha (verified):** `python -m zipapp -m mod:fn` generates `mod.fn()` and *discards the return value*, so pointing it at `main` would lose exit codes. Point it at `run`.
+- `cli.main(argv) -> int` is what tests call. `cli.run()` does `sys.exit(main())` and is used by `__main__.py` and the zipapp. **Gotcha (verified):** a generated `mod.fn()` entry point *discards the return value*, so pointing it at `main` would lose exit codes. Point it at `run`.
 
 **Example text output (failed health check with automatic rollback):**
 
@@ -425,7 +425,9 @@ safe-deploy-controller/
 │   ├── artifacts/                    # tiny .bin files (fixed content)
 │   ├── manifests/                    # good, bad, invalid, checksum-mismatch, outage demo
 │   └── health/{default.json, dependency-outage.json}
-├── scripts/gen_examples.py           # regenerates artifacts + fills sha256 into manifests
+├── scripts/
+│   ├── gen_examples.py               # regenerates artifacts + fills sha256 into manifests
+│   └── build_zipapp.py               # builds a byte-reproducible deployctl.pyz
 ├── src/deployctl/
 │   ├── __init__.py  __main__.py  cli.py  controller.py  models.py  errors.py
 │   ├── manifest.py  state.py  fileio.py  audit.py  target.py  health.py  clock.py  render.py
@@ -760,12 +762,12 @@ class DeploymentController:
 
 ```toml
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "safe-deploy-controller"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local deployment controller with safety gates, health verification and automatic rollback"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -776,6 +778,9 @@ dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
 
 [project.scripts]
 deployctl = "deployctl.cli:main"     # console_scripts wrapper calls sys.exit(main())
+
+[tool.hatch.version]
+path = "src/deployctl/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/deployctl"]
@@ -857,10 +862,7 @@ build: install ## wheel + sdist + single-file zipapp into dist/
 	$(MAKE) zipapp
 
 zipapp:
-	mkdir -p build/zipapp dist
-	cp -R src/deployctl build/zipapp/
-	find build/zipapp -name '__pycache__' -prune -exec rm -rf {} +
-	$(PY) -m zipapp build/zipapp -m 'deployctl.cli:run' -p '/usr/bin/env python3' -c -o dist/deployctl.pyz
+	$(PY) scripts/build_zipapp.py
 
 smoke: build ## run the built artifact, including exit-code propagation
 	$(PYTHON) dist/deployctl.pyz --version
@@ -921,14 +923,14 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4          # pin to commit SHAs in a real repo
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: make ci PYTHON=python
       - if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: deployctl-dist
           path: dist/
@@ -1001,7 +1003,7 @@ jobs:
 | **4. Controller** | 35m | `deploy` pipeline, gates, write-ahead transitions, `_rollback`, `_give_up`, `recover`, interrupt handling | scenario suite T1–T14, T20, T21 (section 11) | `feat: deploy pipeline with verification gate`, `feat: automatic rollback to last known-good`, `feat: idempotent re-runs, locking and recover` |
 | **5. CLI + rendering** | 20m | argparse subcommands with a parent parser, adapter wiring, text/JSON renderers, `status`, `history`, `validate`, exit codes, `run()` | `main([...])` per scenario → exit code; `--output json` stdout parses as JSON; usage error → 2 | `feat: CLI, renderers and exit codes` |
 | **6. Demo + examples** | 10m | `make demo`; run it and paste output into the README | (demo is a manual check) | `docs: example scenarios and demo target` |
-| **7. Package, CI, docs** | 25m | `make build/smoke`, `ci.yml`, `README.md`, `AI_PROCESS.md`, time note, `make dist-tarball` | `test_zipapp_smoke` (build `.pyz` into tmp, run it, assert exit code 3 on invalid manifest) | `build: wheel, zipapp and CI workflow`, `docs: README and AI process` |
+| **7. Package, CI, docs** | 25m | `make build/smoke`, `scripts/build_zipapp.py`, `ci.yml`, `README.md`, `AI_PROCESS.md`, time note, `make dist-tarball` | `test_zipapp_smoke` (build `.pyz` into tmp, run it with no site-packages, assert exit codes propagate and two builds match) | `build: wheel, zipapp and CI workflow`, `docs: README and AI process` |
 | Stretch | — | Section 2 stretch list | property test: random health/fault sequences → env always ends `STABLE` or `NEEDS_ATTENTION` | `feat: ...` |
 
 **Working rhythm per phase:** write the dataclass/protocol first, then tests for the contract, then the implementation. Run `make fmt lint test`, then commit. Commit small; reviewers read the history.
@@ -1063,7 +1065,7 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
    - *Observability gates:* compare canary vs baseline on error rate, p99 latency, saturation; SLO burn-rate check; synthetic checks; require minimum traffic for a meaningful decision; missing metrics = fail; annotate dashboards with deploy events; auto-rollback on burn.
    - *Access controls:* least privilege; deployer identity via short-lived OIDC credentials (no long-lived secrets); separation of duties; signed artifacts verified before apply; audit log shipped to tamper-evident storage.
    - *Making this controller production-grade:* replace the lockfile with a distributed lease + fencing token (etcd/Consul/DynamoDB conditional writes); state in a durable store with optimistic concurrency; real adapters behind the existing `DeploymentTarget`/`HealthProbe` ports (Kubernetes/Argo CD, Prometheus/Datadog); notifications to chat/paging on `NEEDS_ATTENTION`; metrics on deploy outcomes (change failure rate, MTTR).
-9. **Known limitations / shortcuts**: simulated target and health only (no real `DeploymentTarget` or `HealthProbe` adapters), global lock held across the rollout wait (up to twice `rollout_timeout_seconds` when a deploy also rolls back), single host (the lockfile doesn't work across hosts), ledger and audit log are local files, a deploy's `actor` is the manifest's self-declared `requested_by` rather than who ran it, no real artifact store, rollback verification reuses the new manifest's thresholds, drift `recover` uses default thresholds, no pre-release semver, no resume-from-stage after crash (recover rolls back instead), a service with no traffic can produce NaN and fail verification, a lost `state.json` can't be fixed with `recover` and must be restored by hand, a corrupt `environment.json` blocks every environment until repaired by hand.
+9. **Known limitations / shortcuts**: `hatchling`'s own dependencies are not pinned and action SHAs are updated by hand, simulated target and health only (no real `DeploymentTarget` or `HealthProbe` adapters), global lock held across the rollout wait (up to twice `rollout_timeout_seconds` when a deploy also rolls back), single host (the lockfile doesn't work across hosts), ledger and audit log are local files, a deploy's `actor` is the manifest's self-declared `requested_by` rather than who ran it, no real artifact store, rollback verification reuses the new manifest's thresholds, drift `recover` uses default thresholds, no pre-release semver, no resume-from-stage after crash (recover rolls back instead), a service with no traffic can produce NaN and fail verification, a lost `state.json` can't be fixed with `recover` and must be restored by hand, a corrupt `environment.json` blocks every environment until repaired by hand.
    - *Repairing a corrupt `environment.json` (required):* the controller refuses the file and `recover` can't fix it (section 14), so the README must give the operator these steps:
      1. Copy the file aside and inspect it.
      2. Repair it if the correct content is clear. Otherwise delete it. Deleting affects every environment: each one then reads as nothing running, so each needs its own `recover`.
@@ -1122,6 +1124,7 @@ Coverage gate 90% (branch). T11 is the strongest evidence for the "never ambiguo
 | Mark known-bad only when health was measured | A block should mean the version was seen to fail, not that the rollout stalled or someone overwrote it | Those versions can be retried straight away; a version that only times out is still marked |
 | Give `recover` its own path | A rollback marks the failed version, but drift has no failed version and no in-flight record | Two callers of the shared restore step |
 | Wait for the rollout before verifying | Real targets finish rollouts after `apply` returns, and a slow rollout must not use up health attempts | A new manifest field; the lock is held for up to `rollout_timeout_seconds` longer, and a stalled rollout is still marked known-bad |
+| Store `.pyz` entries uncompressed | The bytes don't depend on which zlib Python was built with, so builds can be compared across machines | 78 KB instead of 26 KB |
 | Check the whole health profile on load, keys included; a bad one exits 2 | A bad entry found during verify would fail a good release after `apply`, roll it back and mark it known-bad. Exit 2 matches a missing `--health-profile` | A typo in an unrelated entry blocks the deploy; a valid but wrong key is still missed; the refused attempt is not in `audit.jsonl` |
 
 ---
@@ -1158,7 +1161,7 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 4. Controller | Done | [PR #8](https://github.com/CatalinFediuc/safe-deploy-controller/pull/8) |
 | 5. CLI + rendering | Done | [PR #9](https://github.com/CatalinFediuc/safe-deploy-controller/pull/9) |
 | 6. Demo + examples | Done | [PR #11](https://github.com/CatalinFediuc/safe-deploy-controller/pull/11) |
-| 7. Package, CI, docs | Next | |
+| 7. Package, CI, docs | Done | branch `feat/phase-7-package-ci-docs` |
 
 ### 16.2 Changes from the original plan
 
@@ -1199,6 +1202,11 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 | 6 | `make demo` also runs `path-traversal.json`, as step 8 | It was the only example the demo skipped | 9.2 |
 | 6 | `make demo` passes `--actor oncall` to `recover` | It printed the OS username, which doesn't belong in published output, and failed with `$USER` unset | 9.2 |
 | 6 | Messages say `nothing` instead of `None` | A Python `None` was the first thing the demo showed | none |
+| 7 | `scripts/build_zipapp.py` replaces `python -m zipapp`, and its entries are stored rather than compressed | `zipapp` stamps its generated `__main__.py` with the current time, so two builds never matched, and deflated bytes depend on Python's zlib | 1, 7, 9.2, 10, 14 |
+| 7 | `hatchling` pinned to 1.33.0 | `make build` resolved to the latest version | 9.1 |
+| 7 | The version lives only in `__init__.py`, and `pyproject.toml` reads it through hatch | The two could disagree | 9.1 |
+| 7 | CI actions moved to v7 and pinned to commit SHAs | Stay on supported releases, and a moved tag can't change what CI runs | 9.3 |
+| 7 | `test_zipapp_smoke` runs the `.pyz` with `python -S`, and also covers usage and deploy exit codes | `-S` leaves out site-packages, which proves it needs only the stdlib | 10 |
 
 ### 16.3 Open items
 
@@ -1206,16 +1214,9 @@ Sections 1 to 15 have been updated to match the code. This section records what 
 
 - Add an entry to [ai-log.md](ai-log.md), including the time spent. `AI_PROCESS.md` and the time note depend on it.
 
-**Phase 7, required**
+**After Phase 7**
 
-- Document how to repair a corrupt `environment.json` in the README, using the steps in 12.1. Check them against the finished `recover` first.
-
-**Phase 7, proposed and not yet agreed**
-
-- Make the `.pyz` reproducible or drop the claim in P7: two builds of the same code gave different hashes.
-- Pin `hatchling`, which `make build` currently resolves to the latest version.
-- Keep the version number in one place, or add a test that `pyproject.toml` and `__init__.py` agree.
-- Bump the CI actions for the Node 20 deprecation and pin them to commit SHAs.
+Nothing is required. The stretch list in section 2 is optional.
 
 ### 16.4 Decisions
 
@@ -1223,7 +1224,9 @@ Start here when picking the work back up. Open items in 16.3 are work to do, and
 
 **Waiting for review**
 
-Nothing is waiting right now.
+- [ ] A working demo now exists, which was the condition for looking again at real adapters, a lock across hosts, durable state and hand-restoring a lost `state.json`. Reopen them, or keep them as limitations?
+- [ ] Accept as built: `.pyz` entries are stored uncompressed, so it's 78 KB instead of 26 KB (14).
+- [ ] Accept as built: only `hatchling` itself is pinned. Its dependencies still float, because `python -m build` installs them in an isolated environment.
 
 **Deferred on purpose (2026-10-31)**
 
@@ -1257,3 +1260,5 @@ These were discussed and left as they are, so that they don't disturb the next p
 | 2026-10-31 | `--actor` is on `recover` only, and a deploy's audit shows the manifest's self-declared `requested_by`. Recording who actually ran a deploy will not be implemented | 6, 12.1 |
 | 2026-10-31 | Accepted as built: `--state-dir` is not on `validate`, so passing it is a usage error rather than being ignored | 6 |
 | 2026-10-31 | Accepted as built: with `$USER` unset, `recover` requires `--actor` and exits 2 without it, rather than audit an unknown name | 6 |
+| 2026-11-01 | All four proposed Phase 7 items: reproducible `.pyz`, pin `hatchling`, one version source, bump and pin the CI actions | 1, 9, 16.2 |
+| 2026-11-01 | `AI_PROCESS.md` names Claude Cowork for the plan and no AI for Phase 0. The time note uses the elapsed windows as an upper bound | 12.2 |
